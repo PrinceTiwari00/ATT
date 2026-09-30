@@ -1,8 +1,21 @@
 /** Tiny fetch wrapper around the backend REST API (same-origin, proxied). */
 
+const TOKEN_KEY = 'att_token';
+
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY) || '';
+}
+export function setToken(t) {
+  t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY);
+}
+
 async function request(path, options = {}) {
+  const token = getToken();
   const res = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'X-ATT-Token': token } : {}),
+    },
     ...options,
   });
   let body = null;
@@ -10,6 +23,10 @@ async function request(path, options = {}) {
     body = await res.json();
   } catch {
     body = null;
+  }
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    setToken('');
+    window.dispatchEvent(new Event('att:unauthorized'));
   }
   if (!res.ok) {
     // Error detail may live at body.error, body.message, or nested in
@@ -29,6 +46,10 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  // auth
+  authLogin: (password) => request(`/auth/login`, { method: 'POST', body: JSON.stringify({ password }) }),
+  authCheck: () => request(`/auth/check`),
+
   // dashboard
   dashboardSummary: (date) => request(`/dashboard/summary${date ? `?date=${date}` : ''}`),
 

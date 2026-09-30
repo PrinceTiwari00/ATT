@@ -9,6 +9,7 @@ import Attendance from './pages/Attendance';
 import Teachers from './pages/Teachers';
 import Shifts from './pages/Shifts';
 import Device from './pages/Device';
+import LoginScreen from './components/LoginScreen';
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -75,6 +76,24 @@ export default function App() {
   const { pathname } = useLocation();
   const [title, sub] = TITLES[pathname] || ['ATT', ''];
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+  // Auth gate — pass-through instantly when the server has no APP_PASSWORD.
+  const [auth, setAuth] = useState('checking'); // checking | need | ok
+  useEffect(() => {
+    const check = () =>
+      api.authCheck().then(() => setAuth('ok')).catch(() => setAuth('need'));
+    check();
+    const onKick = () => setAuth('need');
+    window.addEventListener('att:unauthorized', onKick);
+    return () => window.removeEventListener('att:unauthorized', onKick);
+  }, []);
+
+  if (auth === 'checking') {
+    return <div className="grid h-full place-items-center"><div className="h-10 w-10 animate-spin rounded-full border-[3px] border-indigo-200 border-t-indigo-600" /></div>;
+  }
+  if (auth === 'need') {
+    return <LoginScreen onSuccess={() => setAuth('ok')} />;
+  }
 
   return (
     <div className="flex h-full">

@@ -54,6 +54,8 @@ app.use((req, res, next) => {
 });
 
 app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
+app.use('/api/auth', require('./routes/auth').router);
+app.use('/api', require('./middleware/auth')); // active only when APP_PASSWORD set
 app.use('/api/teachers', require('./routes/teachers'));
 app.use('/api/shifts', require('./routes/shifts'));
 app.use('/api/attendance', require('./routes/attendance'));
