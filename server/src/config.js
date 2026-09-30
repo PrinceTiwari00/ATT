@@ -1,6 +1,20 @@
 const path = require('path');
+const fs = require('fs');
 
 const root = path.resolve(__dirname, '..');
+
+/* Zero-dependency .env loader — `cp .env.example .env` just works.
+   Real environment variables always win over the file. */
+const envFile = path.join(root, '.env');
+if (fs.existsSync(envFile)) {
+  for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!m) continue;
+    const [, key, raw] = m;
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = raw.replace(/^["']|["']$/g, '').replace(/\s+#.*$/, '');
+  }
+}
 
 const config = {
   env: process.env.NODE_ENV || 'development',
@@ -12,7 +26,7 @@ const config = {
     // 'real'  = connect to the physical ZKTeco terminal over TCP/IP (PRODUCTION DEFAULT).
     // 'mock'  = development-only hardware simulator (see README § Developing without a device).
     mode: (process.env.ZK_MODE || 'real').toLowerCase(), // 'real' | 'mock'
-    ip: process.env.ZK_IP || '192.168.1.201',
+    ip: process.env.ZK_IP || '192.168.1.110',
     port: parseInt(process.env.ZK_PORT || '4370', 10),
     timeoutMs: parseInt(process.env.ZK_TIMEOUT_MS || '10000', 10),
     // node-zklib reply port used for the UDP keep-alive channel on some firmware

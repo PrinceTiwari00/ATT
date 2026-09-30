@@ -1,8 +1,37 @@
 # Connecting Your ZKTeco Device to ATT
 
+> **✅ This site's device (verified 2026-09-30):** ZKTeco **K14** @
+> **`192.168.1.110:4370`** · firmware 4.0.1 (build 74) · ZKFinger VX10.0 ·
+> SN `ONP6080486080200092` · DHCP **Off** · Comm Key (Password) **= 0**.
+> Configuration screens below show exactly these values — the only remaining
+> requirement is that the machine running the server is on the same
+> `192.168.1.0/24` network (§ “Make the server reach the device”).
+
 This system talks to the terminal over **TCP/IP pull mode** (server → device,
 default port **4370**) using the same protocol as the official ZKTeco
 management software. Follow the steps in order — each has a quick test.
+
+---
+
+## Make the server reach the device (the one hard requirement)
+
+The ATT server must run on a machine **on the same LAN** as the terminal
+(`192.168.1.0/24`) — e.g. the school office PC, a small always-on machine, or
+any server with a route to that subnet. A cloud-hosted server cannot reach a
+private `192.168.x.x` address; in that case use ADMS push mode (§7) or a VPN.
+
+Verify from the server machine before starting the app:
+
+```bash
+# Linux / macOS
+ping 192.168.1.110
+nc -zv 192.168.1.110 4370
+```
+```powershell
+# Windows PowerShell
+ping 192.168.1.110
+Test-NetConnection 192.168.1.110 -Port 4370      # TcpTestSucceeded : True
+```
 
 ---
 
