@@ -12,7 +12,14 @@ async function request(path, options = {}) {
     body = null;
   }
   if (!res.ok) {
-    const msg = (body && (body.error || body.message)) || `Request failed (${res.status})`;
+    // Error detail may live at body.error, body.message, or nested in
+    // body.data.error / body.data.reason (device endpoints) — surface all.
+    const msg =
+      (body &&
+        (body.error ||
+          body.message ||
+          (body.data && (body.data.error || body.data.reason)))) ||
+      `Request failed (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
     err.body = body;
