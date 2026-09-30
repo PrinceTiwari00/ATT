@@ -9,10 +9,9 @@ const config = {
   dbPath: process.env.DB_PATH || path.join(root, 'data', 'attendance.db'),
 
   zk: {
-    // 'mock' ships the built-in hardware simulator so the whole pipeline is
-    // runnable without a device. Set ZK_MODE=real on the school LAN to talk
-    // to the actual ZKTeco terminal.
-    mode: (process.env.ZK_MODE || 'mock').toLowerCase(), // 'real' | 'mock'
+    // 'real'  = connect to the physical ZKTeco terminal over TCP/IP (PRODUCTION DEFAULT).
+    // 'mock'  = development-only hardware simulator (see README § Developing without a device).
+    mode: (process.env.ZK_MODE || 'real').toLowerCase(), // 'real' | 'mock'
     ip: process.env.ZK_IP || '192.168.1.201',
     port: parseInt(process.env.ZK_PORT || '4370', 10),
     timeoutMs: parseInt(process.env.ZK_TIMEOUT_MS || '10000', 10),
@@ -43,7 +42,9 @@ const config = {
   },
 
   seed: {
-    demoData: process.env.SEED_DEMO !== 'false',
+    // NEVER seeds anything in production — demo data is created only when
+    // explicitly requested (SEED_DEMO=true) or via `npm run seed:demo`.
+    demoData: process.env.SEED_DEMO === 'true',
     historyDays: parseInt(process.env.SEED_HISTORY_DAYS || '9', 10),
   },
 };

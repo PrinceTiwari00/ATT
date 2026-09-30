@@ -139,6 +139,8 @@ export default function Device() {
             </div>
           )}
 
+          {!ok && <ConnectionChecklist ip={status?.target.ip} port={status?.target.port} />}
+
           <div className="grid grid-cols-2 gap-2 pt-1">
             <button className="btn-ghost" onClick={runTest} disabled={testing}>
               <Zap size={15} className={testing ? 'animate-pulse' : ''} /> Test link
@@ -236,6 +238,33 @@ export default function Device() {
           onImported={() => { setImportModal(null); load(); }}
         />
       )}
+    </div>
+  );
+}
+
+/** Shown whenever the terminal can't be reached — the real-world fix list. */
+function ConnectionChecklist({ ip, port }) {
+  const items = [
+    <>Device has a <b>static IP</b> set under <b>Menu → COMM → Ethernet</b> (currently expecting <code className="font-mono">{ip}:{port}</code>)</>,
+    <><b>Comm Key = 0</b> on the terminal (<b>Menu → COMM → Comm Key</b> or Cloud/Network settings)</>,
+    <>The server host can <b>ping {ip}</b> — both machines on the same LAN / routable VLAN</>,
+    <>No AP <b>client isolation</b> and firewall allows <b>TCP {port}</b> inbound to this server</>,
+    <>Device clock is accurate (punches are stored in device-local time)</>,
+  ];
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <div className="mb-2 text-[12px] font-bold uppercase tracking-wider text-slate-500">Device unreachable — checklist</div>
+      <ul className="space-y-1.5">
+        {items.map((it, i) => (
+          <li key={i} className="flex items-start gap-2 text-[12px] leading-snug text-slate-600">
+            <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full bg-slate-200 text-[10px] font-bold text-slate-500">{i + 1}</span>
+            {it}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2.5 text-[11px] text-slate-400">
+        Full walkthrough: <code className="rounded bg-slate-200 px-1 py-0.5 font-mono text-[10.5px]">docs/HARDWARE_SETUP.md</code>
+      </p>
     </div>
   );
 }

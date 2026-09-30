@@ -6,11 +6,9 @@ check-in / check-out summaries, and flags **late arrivals** and **early
 departures ("fast going")** against configurable shifts — with a live
 dashboard, teacher management, enrollment sync, and CSV reporting.
 
-> No device handy? The built-in **hardware simulator** (`ZK_MODE=mock`) serves
-> a fully deterministic synthetic day over the same pipeline, so you can run,
-> demo, and test everything without a terminal.
-
----
+**This repository is production-configured by default**: it connects to real
+hardware and never creates fake data. No demo seeding, no simulation — the
+first boot gives you a clean database and a guided 3-step setup.
 
 ## Stack
 
@@ -21,39 +19,36 @@ dashboard, teacher management, enrollment sync, and CSV reporting.
 | Hardware | `node-zklib` (ZKTeco PUSH/TCP protocol on port 4370) |
 | Database | SQLite (`node:sqlite`, zero native deps — swappable for Postgres/MySQL) |
 
-## Quickstart
+---
+
+## Production setup
+
+### 1. Configure & connect your ZKTeco terminal — **[docs/HARDWARE_SETUP.md](docs/HARDWARE_SETUP.md)** ← start here
+
+TL;DR: static IP on the terminal (`192.168.1.201`), **Comm Key = 0**, port
+4370 reachable from the server, accurate device clock. Then:
 
 ```bash
-npm run install:all     # install server + web deps
-npm run dev             # API on :4000 + UI on :5173 (UI proxies /api)
+cd server
+cp .env.example .env          # set ZK_IP / ZK_PORT to your terminal
 ```
 
-Open http://localhost:5173 — the first boot auto-migrates and seeds a demo
-roster (15 teachers, 9 days of realistic punches + today). Run the unit tests
-with `npm test`.
-
-## Connecting a real ZKTeco terminal
-
-1. Put the API host machine on the same LAN as the device.
-2. On the terminal: **Menu → COMM → Ethernet** — static IP `192.168.1.201`
-   (or your IP), **Comm Key = 0**, and note the TCP port (default **4370**).
-3. Add a firewall/NAT pass for TCP 4370 to the API host if needed.
-4. Configure the server and restart:
+### 2. Install & run
 
 ```bash
-export ZK_MODE=real
-export ZK_IP=192.168.1.201
-export ZK_PORT=4370
-npm --prefix server run dev
+npm run install:all           # web + server dependencies
+npm run build                 # builds web/dist (API will serve it on :4000)
+npm --prefix server start     # API on :4000 — UI + API on ONE port
 ```
 
-5. Open **Device & Sync** in the UI → **Test link** → then
-   **Push all teachers → device** or **Fetch device users** to enroll/import.
+First boot auto-migrates an empty database and opens on the guided setup:
+**Shifts → Teachers (Add or Import-from-device) → Device & Sync (Test link,
+push/pull enrollments)**. The poller pulls new punches every
+`POLL_INTERVAL_MINUTES` (default 1).
 
-The poller pulls `get_attendance()` every `POLL_INTERVAL_MINUTES` (default 1).
-Reads are non-destructive — logs are never wiped from the terminal. For
-push-mode / multi-site deployments see **ADMS** in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For development hot-reload instead: `npm run dev` (API :4000 + Vite :5173).
+A systemd unit and reverse-proxy notes are in
+[HARDWARE_SETUP.md §8](docs/HARDWARE_SETUP.md).
 
 ## How statuses are computed
 
@@ -68,6 +63,20 @@ For each teacher and day (from `processed_attendance`):
 
 Middle-of-day stray punches are ignored (first/last rule); single-punch days
 are flagged **OPEN**. Overnight shifts (end ≤ start) roll to the next day.
+The raw punch ledger is never modified or wiped — reports are always
+rebuildable (`POST /api/attendance/recompute`).
+
+## Developing without a device (optional)
+
+A hardware simulator is included strictly for development/demos — it is
+**OFF by default**. To run the whole stack with a fake terminal and fake
+roster on an empty DB:
+
+```bash
+export ZK_MODE=mock SEED_DEMO=true
+npm run dev
+# or on an existing install: npm run seed:demo
+```
 
 ## REST API (selected)
 
@@ -87,17 +96,13 @@ POST   /api/device/users/push-all
 GET    /api/device/unknown-users                     # unmapped punching IDs
 ```
 
-## Configuration
-
-All env vars (with defaults) are documented in
-[server/.env.example](server/.env.example) — most useful: `ZK_MODE`,
-`ZK_IP`/`ZK_PORT`, `POLL_INTERVAL_MINUTES`, `SEED_DEMO`, circuit-breaker
-tunables, and `ZK_MOCK_DAY_MODE=live|complete` for simulator realism.
-
 ## Project docs
 
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — system topology, poll→
-  process→present sequence, resilience model, ER diagram, ADMS notes.
-- `server/src/utils/attendanceLogic.js` — the pure, unit-tested status algorithm.
-- `server/src/zk/realDevice.js` — production device client (timeouts,
-  guaranteed disconnects, defensive firmware field parsing).
+- **[docs/HARDWARE_SETUP.md](docs/HARDWARE_SETUP.md)** — device keypad config,
+  network gotchas, enrollment workflows, ADMS push mode, troubleshooting matrix.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — topology, sequence
+  diagrams, resilience model (retries, circuit breaker, idempotent ingestion),
+  ER diagram.
+- `server/src/utils/attendanceLogic.js` — pure, unit-tested status algorithm
+  (13 cases: `npm test`).
+- `server/.env.example` — every configuration knob, documented.

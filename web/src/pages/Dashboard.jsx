@@ -34,6 +34,8 @@ export default function Dashboard() {
   }));
   const maxDept = Math.max(1, ...deptBreakdown.map((d) => d.total));
 
+  if (kpi.totalActive === 0) return <EmptySetup />;
+
   return (
     <div className="space-y-5 anim-in">
       {/* KPI row (spec § D.4) */}
@@ -172,6 +174,39 @@ function Loading() {
       {Array.from({ length: 5 }).map((_, i) => (
         <div key={i} className="h-28 animate-pulse rounded-2xl bg-slate-200/70" />
       ))}
+    </div>
+  );
+}
+
+/** Production first-run onboarding — shown only when the system is truly empty. */
+function EmptySetup() {
+  const steps = [
+    { n: 1, title: 'Create your shifts', body: 'Define working hours & grace periods (e.g. 08:00–15:30, 10 min grace).', to: '/shifts', cta: 'Open Shifts' },
+    { n: 2, title: 'Add teachers & staff', body: 'Every profile is bound to its ZKTeco enrollment ID — or import IDs straight from the device memory.', to: '/teachers', cta: 'Open Teachers' },
+    { n: 3, title: 'Link the device', body: 'Point the server at your terminal (ZK_IP:ZK_PORT), test the link, then push enrollments or pull users.', to: '/device', cta: 'Open Device & Sync' },
+  ];
+  return (
+    <div className="anim-in mx-auto max-w-3xl space-y-5 py-6">
+      <div className="text-center">
+        <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/30">
+          <UserCheck size={26} />
+        </div>
+        <h2 className="text-xl font-extrabold tracking-tight text-slate-900">Welcome — let’s set up attendance</h2>
+        <p className="mt-1 text-sm text-slate-500">This is a clean production install. Three steps and you’re live.</p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-3">
+        {steps.map((s) => (
+          <div key={s.n} className="card flex flex-col p-5">
+            <span className="mb-3 grid h-8 w-8 place-items-center rounded-full bg-indigo-100 text-sm font-extrabold text-indigo-700">{s.n}</span>
+            <h3 className="font-bold text-slate-900">{s.title}</h3>
+            <p className="mt-1 flex-1 text-[12.5px] leading-relaxed text-slate-500">{s.body}</p>
+            <Link to={s.to} className="btn-primary mt-4 !py-1.5 !text-xs">{s.cta} <ArrowRight size={13} /></Link>
+          </div>
+        ))}
+      </div>
+      <p className="text-center text-[12px] text-slate-400">
+        Connecting hardware for the first time? See <code className="rounded bg-slate-200 px-1.5 py-0.5 font-mono text-[11px]">docs/HARDWARE_SETUP.md</code> in the project.
+      </p>
     </div>
   );
 }
