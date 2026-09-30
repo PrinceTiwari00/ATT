@@ -1,0 +1,19 @@
+{
+  "name": "att-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend API + ZKTeco hardware integration service",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "seed": "node src/db/seed.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "node-zklib": "^1.3.0"
+  }
+}
