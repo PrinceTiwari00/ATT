@@ -5,12 +5,12 @@
 ```mermaid
 flowchart LR
     subgraph SchoolLAN["School LAN (192.168.1.0/24)"]
-        ZK["🖐️ ZKTeco Terminal<br/>192.168.1.201 : 4370<br/>(fingerprint / RFID punches)"]
+        ZK["🖐️ ZKTeco Terminal<br/>192.168.1.110 : 4370<br/>(fingerprint / RFID punches)"]
     end
 
     subgraph Server["ATT Server (Node.js)"]
         direction TB
-        AD["Device Adapter<br/><i>RealZKDevice · MockZKDevice</i>"]
+        AD["Device Adapter<br/><i>RealZKDevice · BridgeZKDevice · MockZKDevice</i>"]
         CM["Connection Manager<br/>retries · backoff · circuit breaker"]
         PL["Background Poller<br/>every N minutes → get_attendance()"]
         PE["Processing Engine<br/>first/last punch → late & early calc"]
@@ -29,6 +29,12 @@ flowchart LR
 
     UI -->|"HTTP /api (proxied)"| API
 ```
+
+The diagram shows **direct mode** (`ZK_MODE=real`) for a server on the school
+LAN. For cloud hosting (`ZK_MODE=bridge`), the server replaces the direct
+adapter with `BridgeZKDevice`; an authenticated school-side agent makes
+outbound HTTPS requests to claim commands and execute them locally against the
+terminal. The Render server never routes to a private device address.
 
 ## 2. Poll → Process → Present pipeline
 
@@ -131,14 +137,27 @@ status = late_early | late | early | on_time
 Tested in `server/test/attendanceLogic.test.js` (13 cases incl. overnight shifts,
 stray mid-day punches, single-punch days, grace-boundary inclusivity).
 
-## 6. ADMS alternative (push mode)
+## 6. Cloud hosting: authenticated LAN bridge
 
-This build uses **pull mode** (server → device :4370), ideal for one site on the
-same LAN. For multi-branch schools or NAT'd devices, run an ADMS push receiver
-(device → server over HTTP): point the terminal's *Cloud/ADMS* server setting at
-the API host and ingest `/iclock/cdata` pushes into the same
-`attendance_logs` ingestion function used by the poller (`ingestDeviceRecords`),
-so the processing engine, UI, and reports stay identical.
+A Render/cloud service cannot open TCP connections to a terminal on a private
+school IP. In `ZK_MODE=bridge`, the server queues a small allow-listed set of
+operations (`testConnection`, `getUsers`, `getAttendance`, `setUser`) in
+memory. `server/src/agent.js` makes outbound HTTPS polls using
+`DEVICE_BRIDGE_TOKEN`, executes them through `RealZKDevice` on the school LAN,
+and posts the result. The attendance poller then uses its normal idempotent
+SQLite ingestion and processing path. The same bridge supports interactive
+user import and enrollment push from the Device page.
+
+The agent does not listen for inbound connections, persist attendance, or
+expose TCP 4370. If the cloud process restarts, any in-flight command times out
+and the existing poller retries at its next interval; attendance remains on
+the terminal until a successful pull. Keep the server at one instance when
+using its persistent SQLite disk.
+
+This repository does **not** implement a ZKTeco ADMS receiver. The documented
+K14 firmware does not provide ADMS push mode; cloud sync uses the LAN bridge.
+Other device families can use ADMS only after a receiver is explicitly added
+and tested for their firmware.
 
 ## 7. Project layout
 
@@ -147,12 +166,13 @@ ATT/
 ├── server/
 │   ├── src/
 │   │   ├── index.js                  boot: migrate→seed→manager→poller→API
+│   │   ├── agent.js                  LAN-side HTTPS command agent for cloud mode
 │   │   ├── config.js                 env-driven configuration
 │   │   ├── db/{connection,migrate,seed}.js
 │   │   ├── utils/attendanceLogic.js  ★ pure status algorithm
-│   │   ├── zk/{deviceContract,realDevice,mockDevice,manager}.js
-│   │   ├── services/{poller,processor}.js
-│   │   └── routes/{teachers,shifts,attendance,dashboard,device}.js
+│   │   ├── zk/{deviceContract,realDevice,mockDevice,bridgeDevice,manager}.js
+│   │   ├── services/{deviceBridge,poller,processor}.js
+│   │   └── routes/{teachers,shifts,attendance,dashboard,device,bridge}.js
 │   └── test/attendanceLogic.test.js
 ├── web/
 │   └── src/{App.jsx, api/client.js, components/, pages/}

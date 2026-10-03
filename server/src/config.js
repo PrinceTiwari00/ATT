@@ -16,6 +16,11 @@ if (fs.existsSync(envFile)) {
   }
 }
 
+const zkMode = (process.env.ZK_MODE || 'real').toLowerCase();
+if (!['real', 'mock', 'bridge'].includes(zkMode)) {
+  throw new Error(`Unsupported ZK_MODE "${zkMode}" (expected real, mock, or bridge)`);
+}
+
 const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '4000', 10),
@@ -23,9 +28,10 @@ const config = {
   dbPath: process.env.DB_PATH || path.join(root, 'data', 'attendance.db'),
 
   zk: {
-    // 'real'  = connect to the physical ZKTeco terminal over TCP/IP (PRODUCTION DEFAULT).
-    // 'mock'  = development-only hardware simulator (see README § Developing without a device).
-    mode: (process.env.ZK_MODE || 'real').toLowerCase(), // 'real' | 'mock'
+    // 'real'   = server connects directly to the ZKTeco terminal over TCP/IP.
+    // 'bridge' = cloud server talks to an authenticated agent on the device LAN.
+    // 'mock'   = development-only hardware simulator.
+    mode: zkMode,
     ip: process.env.ZK_IP || '192.168.1.110',
     port: parseInt(process.env.ZK_PORT || '4370', 10),
     timeoutMs: parseInt(process.env.ZK_TIMEOUT_MS || '10000', 10),
@@ -37,6 +43,15 @@ const config = {
     //   'complete' → the device already holds today's full day (great for demos)
     //   'live'     → only punches made up to the current wall-clock time
     mockDayMode: (process.env.ZK_MOCK_DAY_MODE || 'complete').toLowerCase(),
+  },
+
+  bridge: {
+    // Shared only between the cloud app and its trusted on-site device agent.
+    token: process.env.DEVICE_BRIDGE_TOKEN || '',
+    commandTimeoutMs: parseInt(process.env.DEVICE_BRIDGE_COMMAND_TIMEOUT_MS || '60000', 10),
+    agentOnlineWindowMs: parseInt(process.env.DEVICE_BRIDGE_ONLINE_WINDOW_MS || '30000', 10),
+    agentPollIntervalMs: parseInt(process.env.DEVICE_BRIDGE_POLL_INTERVAL_MS || '2000', 10),
+    agentHeartbeatIntervalMs: parseInt(process.env.DEVICE_BRIDGE_HEARTBEAT_INTERVAL_MS || '8000', 10),
   },
 
   poll: {

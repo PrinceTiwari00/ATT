@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: att-attendance
+    runtime: node
+    plan: starter
+    buildCommand: npm ci --prefix server && npm ci --include=dev --prefix web && npm run build --prefix web
+    startCommand: npm --prefix server start
+    healthCheckPath: /api/health
+    disk:
+      name: att-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22.22.3"
+      - key: NODE_ENV
+        value: production
+      - key: ZK_MODE
+        value: bridge
+      - key: ZK_IP
+        value: 192.168.1.110
+      - key: ZK_PORT
+        value: "4370"
+      - key: DB_PATH
+        value: /var/data/attendance.db
+      - key: APP_PASSWORD
+        generateValue: true
+      - key: APP_TOKEN_SALT
+        generateValue: true
+      - key: DEVICE_BRIDGE_TOKEN
+        generateValue: true
+      - key: POLL_ENABLED
+        value: "true"
+      - key: POLL_INTERVAL_MINUTES
+        value: "1"

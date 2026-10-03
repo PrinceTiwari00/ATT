@@ -16,6 +16,13 @@ const { initManager } = require('./zk/manager');
 const { startPoller } = require('./services/poller');
 const { getDb } = require('./db/connection');
 
+if (config.zk.mode === 'bridge' && !config.bridge.token) {
+  throw new Error('DEVICE_BRIDGE_TOKEN must be configured when ZK_MODE=bridge');
+}
+if (config.env === 'production' && !process.env.APP_PASSWORD) {
+  console.warn('[security] APP_PASSWORD is unset; public API/UI access is not protected');
+}
+
 migrate();
 seedIfEmpty();
 
@@ -41,7 +48,6 @@ initManager(() =>
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '1mb' }));
 
 // request log (compact)
 app.use((req, res, next) => {
@@ -54,6 +60,10 @@ app.use((req, res, next) => {
 });
 
 app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
+// Machine-to-machine route checks its own secret before parsing larger
+// attendance batches, and does not use the interactive APP_PASSWORD token.
+app.use('/api/bridge', require('./routes/bridge'));
+app.use(express.json({ limit: '1mb' }));
 app.use('/api/auth', require('./routes/auth').router);
 app.use('/api', require('./middleware/auth')); // active only when APP_PASSWORD set
 app.use('/api/teachers', require('./routes/teachers'));

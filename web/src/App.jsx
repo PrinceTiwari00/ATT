@@ -46,9 +46,10 @@ function DevicePill() {
       </span>
     );
   }
-  if (status.error || status.circuit === 'open') {
+  const bridgeOffline = status.mode === 'bridge' && !status.bridge?.online;
+  if (status.error || status.circuit === 'open' || bridgeOffline) {
     return (
-      <span className="badge bg-rose-100 text-rose-700" title={status.lastError?.message || 'API unreachable'}>
+      <span className="badge bg-rose-100 text-rose-700" title={status.lastError?.message || (bridgeOffline ? 'School LAN agent is offline' : 'API unreachable')}>
         <WifiOff size={12} /> Device Offline
       </span>
     );
@@ -56,10 +57,10 @@ function DevicePill() {
   return (
     <span
       className="badge bg-emerald-100 text-emerald-700"
-      title={`${status.mode === 'mock' ? 'Simulated' : 'ZKTeco'} @ ${status.target.ip}:${status.target.port}`}
+      title={`${status.mode === 'mock' ? 'Simulated' : status.mode === 'bridge' ? 'ZKTeco via school LAN agent' : 'ZKTeco'} @ ${status.target.ip}:${status.target.port}`}
     >
       <Wifi size={12} className="pulse-dot" />
-      {status.mode === 'mock' ? 'SIM·Linked' : 'ZKTeco·Linked'} {status.target.ip}
+      {status.mode === 'mock' ? 'SIM·Linked' : status.mode === 'bridge' ? 'LAN·Linked' : 'ZKTeco·Linked'} {status.target.ip}
     </span>
   );
 }

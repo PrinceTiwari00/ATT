@@ -2,7 +2,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  *  PRODUCTION ZKTECO CONNECTION  (spec § B.1 / deliverable #2)
  * ─────────────────────────────────────────────────────────────────────────────
- *  Talks to a ZKTeco terminal over TCP/IP (default 192.168.1.201:4370) using
+ *  Talks to a ZKTeco terminal over TCP/IP (default 192.168.1.110:4370) using
  *  the `node-zklib` protocol implementation.
  *
  *  Production-hardening built in here:
@@ -23,8 +23,8 @@
  *                             different field names; we accept all known
  *                             variants and normalize to the device contract.
  *
- *  ADMS note: for push-mode (device → server over internet), run the ADMS
- *  receiver (docs/ARCHITECTURE.md § ADMS) instead of this polling client.
+ *  Cloud deployments should use BridgeZKDevice on the server and run this
+ *  adapter locally inside the authenticated LAN-side agent.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 const {
