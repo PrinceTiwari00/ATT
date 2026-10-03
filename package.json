@@ -8,6 +8,7 @@
     "dev": "concurrently -n server,web -c blue,magenta \"npm --prefix server run dev\" \"npm --prefix web run dev\"",
     "dev:server": "npm --prefix server run dev",
     "dev:web": "npm --prefix web run dev",
+    "device-agent": "npm --prefix server run agent",
     "seed:demo": "npm --prefix server run seed:demo -- --force",
     "test": "npm --prefix server test",
     "build": "npm --prefix web run build"

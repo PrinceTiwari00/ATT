@@ -81,7 +81,8 @@ export default function Device() {
     }
   };
 
-  const ok = status && !status.error && status.circuit !== 'open';
+  const bridgeOnline = status?.mode !== 'bridge' || status?.bridge?.online;
+  const ok = Boolean(status && bridgeOnline && status.circuit !== 'open');
 
   return (
     <div className="anim-in grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -101,8 +102,8 @@ export default function Device() {
               </div>
             </div>
             {status && (
-              <span className={`badge ${status.mode === 'mock' ? 'bg-amber-400/20 text-amber-200' : 'bg-emerald-400/20 text-emerald-200'}`}>
-                {status.mode === 'mock' ? 'SIMULATOR' : 'HARDWARE'}
+              <span className={`badge ${status.mode === 'mock' ? 'bg-amber-400/20 text-amber-200' : status.mode === 'bridge' && !status.bridge?.online ? 'bg-amber-400/20 text-amber-200' : 'bg-emerald-400/20 text-emerald-200'}`}>
+                {status.mode === 'mock' ? 'SIMULATOR' : status.mode === 'bridge' ? 'SITE BRIDGE' : 'HARDWARE'}
               </span>
             )}
           </div>
@@ -127,6 +128,11 @@ export default function Device() {
           <StatusRow icon={Activity} label="Circuit breaker" value={status?.circuit || '—'}
             tone={status?.circuit === 'open' ? 'text-rose-600' : 'text-emerald-600'}
             sub={status?.nextProbeAt ? `probe at ${new Date(status.nextProbeAt).toLocaleTimeString()}` : `${status?.consecutiveFailures ?? 0} consecutive failures`} />
+          {status?.mode === 'bridge' && (
+            <StatusRow icon={Server} label="School LAN agent" value={status.bridge?.online ? 'online' : 'offline'}
+              tone={status.bridge?.online ? 'text-emerald-600' : 'text-rose-600'}
+              sub={status.bridge?.lastSeenAt ? `last seen ${new Date(status.bridge.lastSeenAt).toLocaleTimeString()}` : 'waiting for the agent'} />
+          )}
           <StatusRow icon={RefreshCw} label="Poller" value={`every ${status?.pollIntervalMinutes ?? '—'} min`}
             sub={status?.lastSyncAt ? `last ${new Date(status.lastSyncAt).toLocaleTimeString()}` : 'not synced yet'}
             tone={status?.pollerBusy ? 'text-indigo-600' : 'text-slate-700'} />
@@ -139,7 +145,15 @@ export default function Device() {
             </div>
           )}
 
-          {!ok && <ConnectionChecklist ip={status?.target.ip} port={status?.target.port} />}
+          {!ok && (
+            <ConnectionChecklist
+              mode={status?.mode}
+              ip={status?.target.ip}
+              port={status?.target.port}
+              bridgeEnabled={status?.bridge?.enabled}
+              bridgeOnline={status?.bridge?.online}
+            />
+          )}
 
           <div className="grid grid-cols-2 gap-2 pt-1">
             <button className="btn-ghost" onClick={runTest} disabled={testing}>
@@ -243,14 +257,23 @@ export default function Device() {
 }
 
 /** Shown whenever the terminal can't be reached — the real-world fix list. */
-function ConnectionChecklist({ ip, port }) {
-  const items = [
-    <>Device has a <b>static IP</b> set under <b>Menu → COMM → Ethernet</b> (currently expecting <code className="font-mono">{ip}:{port}</code>)</>,
-    <><b>Comm Key = 0</b> on the terminal (<b>Menu → COMM → Comm Key</b> or Cloud/Network settings)</>,
-    <>The server host can <b>ping {ip}</b> — both machines on the same LAN / routable VLAN</>,
-    <>No AP <b>client isolation</b> and firewall allows <b>TCP {port}</b> inbound to this server</>,
-    <>Device clock is accurate (punches are stored in device-local time)</>,
-  ];
+function ConnectionChecklist({ mode, ip, port, bridgeEnabled, bridgeOnline }) {
+  const items = mode === 'bridge'
+    ? [
+        bridgeOnline
+          ? <><b>LAN bridge agent is online.</b> Verify the terminal is reachable from that machine at <code className="font-mono">{ip}:{port}</code>.</>
+          : <><b>Start the LAN bridge agent</b> on an always-on school PC that can reach the terminal.</>,
+        <>Set <code className="font-mono">ATT_API_URL</code> to this Render URL and configure the same <code className="font-mono">DEVICE_BRIDGE_TOKEN</code> on Render and the agent{!bridgeEnabled ? ' (the server token is not configured yet)' : ''}.</>,
+        <>From the agent host, verify it can reach the terminal over TCP and the school network allows outbound HTTPS.</>,
+        <>Do not port-forward the ZKTeco port. The agent connects outward to Render; device traffic stays on the school LAN.</>,
+      ]
+    : [
+        <>Device has a <b>static IP</b> set under <b>Menu → COMM → Ethernet</b> (currently expecting <code className="font-mono">{ip}:{port}</code>)</>,
+        <><b>Comm Key = 0</b> on the terminal (<b>Menu → COMM → Comm Key</b> or Cloud/Network settings)</>,
+        <>The server host can <b>ping {ip}</b> — both machines on the same LAN / routable VLAN</>,
+        <>No AP <b>client isolation</b>; the server host can open outbound <b>TCP {port}</b> to the terminal</>,
+        <>Device clock is accurate (punches are stored in device-local time)</>,
+      ];
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
       <div className="mb-2 text-[12px] font-bold uppercase tracking-wider text-slate-500">Device unreachable — checklist</div>
@@ -263,7 +286,7 @@ function ConnectionChecklist({ ip, port }) {
         ))}
       </ul>
       <p className="mt-2.5 text-[11px] text-slate-400">
-        Full walkthrough: <code className="rounded bg-slate-200 px-1 py-0.5 font-mono text-[10.5px]">docs/HARDWARE_SETUP.md</code>
+        Full walkthrough: <code className="rounded bg-slate-200 px-1 py-0.5 font-mono text-[10.5px]">{mode === 'bridge' ? 'docs/RENDER.md' : 'docs/HARDWARE_SETUP.md'}</code>
       </p>
     </div>
   );

@@ -3,9 +3,9 @@
 > **✅ This site's device (verified 2026-09-30):** ZKTeco **K14** @
 > **`192.168.1.110:4370`** · firmware 4.0.1 (build 74) · ZKFinger VX10.0 ·
 > SN `ONP6080486080200092` · DHCP **Off** · Comm Key (Password) **= 0**.
-> Configuration screens below show exactly these values — the only remaining
-> requirement is that the machine running the server is on the same
-> `192.168.1.0/24` network (§ “Make the server reach the device”).
+> Configuration screens below show the verified device values. In direct
+> mode the server needs a route to `192.168.1.0/24`; for Render/cloud mode run
+> the bridge agent on a school-LAN machine that has that route.
 
 This system talks to the terminal over **TCP/IP pull mode** (server → device,
 default port **4370**) using the same protocol as the official ZKTeco
@@ -13,14 +13,11 @@ management software. Follow the steps in order — each has a quick test.
 
 ---
 
-## Make the server reach the device (the one hard requirement)
+## Choose how the app reaches the device
 
-The ATT server must run on a machine **on the same LAN** as the terminal
-(`192.168.1.0/24`) — e.g. the school office PC, a small always-on machine, or
-any server with a route to that subnet. A cloud-hosted server cannot reach a
-private `192.168.x.x` address; in that case use ADMS push mode (§7) or a VPN.
-
-Verify from the server machine before starting the app:
+For direct mode (`ZK_MODE=real`), the ATT server must run on a machine that can
+route to the terminal's private LAN address (`192.168.1.0/24`). Verify from
+that server machine before starting the app:
 
 ```bash
 # Linux / macOS
@@ -33,18 +30,24 @@ ping 192.168.1.110
 Test-NetConnection 192.168.1.110 -Port 4370      # TcpTestSucceeded : True
 ```
 
+For a cloud-hosted app such as Render, do **not** expect the cloud server to
+reach that private address. Run the included `server/src/agent.js` on an
+always-on school machine that passes this test; set the cloud app to
+`ZK_MODE=bridge` and follow [RENDER.md](RENDER.md). The agent makes outbound
+HTTPS requests, so no port-forward or ADMS support is required.
+
 ---
 
 ## 0. What you need
 
 - A ZKTeco terminal with Ethernet/Wi-Fi (K40, iClock, MB/iface series, uFace, etc.)
-- The machine running the ATT server on a network that can **route** to the device
+- Direct mode: the ATT server host can **route** to the device; cloud mode: the LAN agent host can **route** to it
 - 5 minutes on the terminal's keypad (admin access required)
 
 ```
 ┌──────────────┐   ping / TCP 4370   ┌─────────────────┐
 │ ATT server   │ ◄─────────────────► │ ZKTeco terminal │
-│ (this app)   │                     │ 192.168.1.201   │
+│ (this app)   │                     │ 192.168.1.110   │
 └──────────────┘                     └─────────────────┘
 ```
 
@@ -59,7 +62,7 @@ Menu labels vary slightly by firmware — the setting names are the constants.
 
 | Setting | Value | Notes |
 |---|---|---|
-| IP Address | `192.168.1.201` | any free address on your LAN — keep this one |
+| IP Address | `192.168.1.110` | any free address on your LAN — keep this one |
 | Subnet Mask | `255.255.255.0` | match your LAN |
 | Gateway | `192.168.1.1` | your router |
 | DHCP | **OFF** | a static IP that survives reboots is essential |
@@ -83,8 +86,8 @@ clock — a drifting clock produces wrong “Late/Early” minutes.
 
 ✅ **Test:** from the server machine —
 ```bash
-ping 192.168.1.201
-nc -zv 192.168.1.201 4370        # or: telnet 192.168.1.201 4370
+ping 192.168.1.110
+nc -zv 192.168.1.110 4370        # or: telnet 192.168.1.110 4370
 ```
 Both must succeed before touching the app.
 
@@ -95,13 +98,18 @@ Both must succeed before touching the app.
 Set the environment (copy `server/.env.example` → `server/.env`, or export):
 
 ```bash
-ZK_MODE=real                # production mode — talk to real hardware
-ZK_IP=192.168.1.201
+ZK_MODE=real                # direct mode — server runs on the device LAN
+ZK_IP=192.168.1.110
 ZK_PORT=4370
 POLL_INTERVAL_MINUTES=5     # how often logs are pulled
 ```
 
-Restart the server. On boot you'll see `ZKTeco mode: real @ 192.168.1.201:4370`.
+For Render/cloud hosting, set `ZK_MODE=bridge` and a shared
+`DEVICE_BRIDGE_TOKEN` on the cloud service, then run the `agent` script on the
+LAN machine with `ATT_API_URL`, the same token, and its local `ZK_IP`/`ZK_PORT`.
+See [RENDER.md](RENDER.md) for complete setup.
+
+Restart the direct-mode server. On boot you'll see `ZKTeco mode: real @ 192.168.1.110:4370`.
 
 ---
 
@@ -151,7 +159,7 @@ enroll fingerprints on the terminal under that same User ID
 | Wi-Fi AP *client isolation* | Disable it, or wire the terminal via Ethernet |
 | DHCP reservation changed the IP | Assign static IP on the device (§1.1) or reserve in the router |
 | Different subnet/VLAN | Add a route or move the server to the same VLAN |
-| Windows firewall on the server | Allow inbound TCP 4370 to Node |
+| Firewall / endpoint security | Allow the server or bridge host to open outbound TCP 4370 to the terminal |
 | Device was just reconfigured | **Reboot the terminal** — network changes often need it |
 | Another ZK software connected | Close it; the single session belongs to ATT |
 
@@ -160,23 +168,26 @@ enroll fingerprints on the terminal under that same User ID
 ## 6. Security notes (production)
 
 - Never expose TCP 4370 to the internet — LAN/VLAN only.
-- If you must cross untrusted networks, use **ADMS push mode** (§7) through a
-  TLS reverse proxy instead of opening 4370 inbound.
+- For a cloud-hosted ATT server, use the authenticated **LAN bridge agent**
+  (§7 / [RENDER.md](RENDER.md)); do not try to route or forward port 4370.
 - The permissive Comm Key = 0 is standard for LAN pull mode; compensate with
   network isolation (dedicated management VLAN is ideal).
 - Keep `server/data/attendance.db` backed up (it's a single file).
 
 ---
 
-## 7. Multi-branch / NAT — ADMS push mode
+## 7. Cloud / NAT — outbound LAN bridge
 
-For devices outside the server’s LAN (other campuses behind NAT), use the
-terminal's built-in **push** instead: `Menu → Cloud Server Settings` →
-enable **ADMS**, set Server Address = your server's public IP/domain and its
-port. The device then *pushes* punches over HTTP to endpoints
-(`/iclock/cdata…`). This build ships pull mode; the ingestion point for
-ADMS pushes feeds the same `attendance_logs` table — the processing engine
-and UI are unchanged. See `docs/ARCHITECTURE.md → ADMS alternative`.
+This K14 firmware (4.0.1) has no ADMS push mode. For a cloud-hosted ATT
+instance, keep the device private and run the included bridge agent on a
+machine on the school LAN. The cloud service queues allowed operations and the
+agent polls over outbound HTTPS, then reads punches and user records over TCP
+4370 locally. No inbound port-forward is needed.
+
+See [RENDER.md](RENDER.md) for the Render deployment and agent setup. Other
+ZKTeco families may have ADMS support, but this repository does not currently
+include an ADMS receiver; use the LAN bridge unless a device-specific receiver
+has been added and tested.
 
 ---
 
@@ -188,7 +199,7 @@ npm run build            # builds web/dist (served by the API on :4000)
 # systemd unit example:
 #   [Service]
 #   WorkingDirectory=/opt/att/server
-#   Environment=ZK_MODE=real ZK_IP=192.168.1.201 ZK_PORT=4370
+#   Environment=ZK_MODE=real ZK_IP=192.168.1.110 ZK_PORT=4370
 #   Environment=PORT=4000 DB_PATH=/var/lib/att/attendance.db POLL_INTERVAL_MINUTES=5
 #   ExecStart=/usr/bin/node src/index.js
 #   Restart=always

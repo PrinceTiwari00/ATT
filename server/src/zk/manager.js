@@ -18,6 +18,8 @@
 const config = require('../config');
 const { RealZKDevice } = require('./realDevice');
 const { MockZKDevice } = require('./mockDevice');
+const { BridgeZKDevice } = require('./bridgeDevice');
+const { getAgentStatus } = require('../services/deviceBridge');
 const { ZKConnectionError, ZKDeviceError } = require('./deviceContract');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -39,7 +41,9 @@ class ZKManager {
     this.device =
       config.zk.mode === 'real'
         ? new RealZKDevice(config.zk)
-        : new MockZKDevice(config.zk, rosterProvider);
+        : config.zk.mode === 'bridge'
+          ? new BridgeZKDevice(config.zk)
+          : new MockZKDevice(config.zk, rosterProvider);
 
     this.consecutiveFailures = 0;
     this.circuit = 'closed'; // closed | open | half-open
@@ -114,8 +118,17 @@ class ZKManager {
 
   async testConnection() {
     try {
-      const res = await this.call('testConnection', (d) => d.testConnection(), { retries: 2 });
-      if (res && res.ok === false && res.retryable) throw new ZKConnectionError(res.error);
+      const res = await this.call(
+        'testConnection',
+        async (d) => {
+          const result = await d.testConnection();
+          if (result && result.ok === false && result.retryable) {
+            throw new ZKConnectionError(result.error);
+          }
+          return result;
+        },
+        { retries: 2 }
+      );
       return res;
     } catch (err) {
       return {
@@ -146,6 +159,7 @@ class ZKManager {
       nextProbeAt: this.circuit === 'open' ? new Date(this.nextAttemptAt).toISOString() : null,
       pollIntervalMinutes: config.poll.intervalMinutes,
       pollerBusy: this.busy,
+      bridge: this.mode === 'bridge' ? getAgentStatus() : null,
       lastSyncAt: this.lastSyncAt,
       lastSyncResult: this.lastSyncResult,
       lastError: this.lastError,

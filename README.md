@@ -16,7 +16,7 @@ first boot gives you a clean database and a guided 3-step setup.
 |---|---|
 | Frontend | React 19 · Vite 7 · Tailwind CSS v4 · Recharts · lucide-react |
 | Backend | Node.js 22 · Express 4 |
-| Hardware | `node-zklib` (ZKTeco PUSH/TCP protocol on port 4370) |
+| Hardware | `node-zklib` (ZKTeco TCP protocol on port 4370; direct or LAN-bridge mode) |
 | Database | SQLite (`node:sqlite`, zero native deps — swappable for Postgres/MySQL) |
 
 ---
@@ -25,7 +25,7 @@ first boot gives you a clean database and a guided 3-step setup.
 
 ### 1. Configure & connect your ZKTeco terminal — **[docs/HARDWARE_SETUP.md](docs/HARDWARE_SETUP.md)** ← start here
 
-TL;DR: static IP on the terminal (`192.168.1.201`), **Comm Key = 0**, port
+TL;DR: static IP on the terminal (`192.168.1.110`), **Comm Key = 0**, port
 4370 reachable from the server, accurate device clock. Then:
 
 ```bash
@@ -49,6 +49,17 @@ push/pull enrollments)**. The poller pulls new punches every
 For development hot-reload instead: `npm run dev` (API :4000 + Vite :5173).
 A systemd unit and reverse-proxy notes are in
 [HARDWARE_SETUP.md §8](docs/HARDWARE_SETUP.md).
+
+### Render cloud deployment
+
+This repo includes a Render Blueprint at [`render.yaml`](render.yaml) and a
+LAN-side device agent. Render cannot connect directly to a private school
+address, so deploy in bridge mode and run `npm --prefix server run agent` on an
+always-on school machine that can reach the terminal. The agent uses outbound
+HTTPS to sync punches, device users, and enrollment commands; no device port
+is exposed publicly. Follow **[docs/RENDER.md](docs/RENDER.md)** to deploy and
+pair it. The Blueprint creates a persistent disk and generates separate staff
+login and bridge secrets.
 
 ## How statuses are computed
 
@@ -99,7 +110,10 @@ GET    /api/device/unknown-users                     # unmapped punching IDs
 ## Project docs
 
 - **[docs/HARDWARE_SETUP.md](docs/HARDWARE_SETUP.md)** — device keypad config,
-  network gotchas, enrollment workflows, ADMS push mode, troubleshooting matrix.
+  network gotchas, enrollment workflows, and troubleshooting.
+- **[docs/RENDER.md](docs/RENDER.md)** — Render Blueprint, persistent disk,
+  secure LAN agent setup, and end-to-end device sync.
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — choose a local or cloud topology.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — topology, sequence
   diagrams, resilience model (retries, circuit breaker, idempotent ingestion),
   ER diagram.
