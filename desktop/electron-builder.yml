@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  ATT for Windows — electron-builder configuration
+#  Produces: ATT-Attendance-Setup-<version>.exe  (NSIS, per-machine, x64)
+#  Build:    npm --prefix desktop run dist:win     (Windows, or CI on windows-latest)
+# ─────────────────────────────────────────────────────────────────────────────
+appId: com.att.attendance
+productName: ATT Attendance
+copyright: Copyright © 2026 ATT Project
+
+directories:
+  output: release
+  buildResources: build
+
+asar: true
+# The payload (bundled Node runtime + single-file server + built web UI) is not
+# part of the asar: node.exe must be spawnable and the web assets readable.
+npmRebuild: false
+compression: normal
+
+files:
+  - src/**/*
+  - assets/**/*
+  - package.json
+  - "!**/*.map"
+
+extraResources:
+  # prepared by scripts/prepare-payload.mjs → desktop/dist/payload
+  - from: dist/payload
+    to: payload
+    filter:
+      - "**/*"
+  - from: service
+    to: service
+    filter:
+      - "att-service.xml"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  # asInvoker: the app itself needs no admin rights. Installing the optional
+  # background service triggers exactly one UAC prompt through PowerShell.
+  requestedExecutionLevel: asInvoker
+  artifactName: ${productName}-Setup-${version}.${ext}
+  publisherName: ATT Project
+  fileDescription: ZKTeco integrated attendance tracking
+
+nsis:
+  oneClick: false
+  perMachine: true
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: ATT Attendance
+  uninstallDisplayName: ATT Attendance
+  uninstallDescription: Attendance tracking for ZKTeco biometric terminals
+  # Attendance history must survive an uninstall — the database lives in
+  # C:\ProgramData\ATT and is only removed if the user ticks that box.
+  deleteAppDataOnUninstall: false
+  include: build/installer.nsh
+  menuCategory: false
+  runAfterFinish: true
+  warningsAsErrors: false
+
+# No auto-update feed: the installer is published as a GitHub release artifact
+# and the app links to it (Help → Check for updates).
+publish: null

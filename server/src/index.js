@@ -1,97 +1,131 @@
+#!/usr/bin/env node
 /**
- * ATT — ZKTeco Attendance Tracking System · API server entrypoint
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  ATT — ZKTeco Attendance Tracking System · entrypoint
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  Works identically for every way ATT is launched:
  *
- * Boot order: migrate DB → seed demo data (first run) → wire device manager →
- * start background poller → serve REST API (+ built frontend if present).
+ *    node src/index.js                 development / systemd / Render
+ *    node server.cjs --service         Windows background service (WinSW)
+ *    node server.cjs --port 4010       desktop app child process
+ *    node server.cjs --agent           cloud bridge agent on the school LAN
+ *    node server.cjs --doctor          network + device health report
+ *
+ *  Boot order: settings → file log → migrate → seed → manager → poller → API.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
-const path = require('path');
-const fs = require('fs');
-const express = require('express');
-const cors = require('cors');
-
+const { attachFileLog, flushSync } = require('./log');
+const settings = require('./settings');
 const config = require('./config');
-const { migrate } = require('./db/migrate');
-const { seedIfEmpty } = require('./db/seed');
-const { initManager } = require('./zk/manager');
-const { startPoller } = require('./services/poller');
-const { getDb } = require('./db/connection');
 
-if (config.zk.mode === 'bridge' && !config.bridge.token) {
-  throw new Error('DEVICE_BRIDGE_TOKEN must be configured when ZK_MODE=bridge');
-}
-if (config.env === 'production' && !process.env.APP_PASSWORD) {
-  console.warn('[security] APP_PASSWORD is unset; public API/UI access is not protected');
-}
-
-migrate();
-seedIfEmpty();
-
-// Roster provider feeds the mock simulator (real mode ignores it).
-initManager(() =>
-  getDb()
-    .prepare(
-      `SELECT t.zk_user_id, t.full_name,
-              COALESCE(s.start_time, d.start_time) AS start_time,
-              COALESCE(s.end_time,   d.end_time)   AS end_time
-       FROM teachers t
-       LEFT JOIN shifts s ON s.id = t.shift_id
-       LEFT JOIN shifts d ON d.is_default = 1
-       WHERE t.status = 'active'`
-    )
-    .all()
-    .map((r) => ({
-      zk_user_id: r.zk_user_id,
-      full_name: r.full_name,
-      shift: r.start_time ? { start_time: r.start_time, end_time: r.end_time } : null,
-    }))
+/* ── CLI arguments ─────────────────────────────────────────────────────── */
+const argv = process.argv.slice(2);
+const flags = new Set(argv.filter((a) => a.startsWith('--')).map((a) => a.replace(/^--/, '').split('=')[0]));
+const opts = Object.fromEntries(
+  argv.filter((a) => a.startsWith('--') && a.includes('=')).map((a) => [a.replace(/^--/, '').split('=')[0], a.slice(a.indexOf('=') + 1)])
 );
+const command = argv.find((a) => !a.startsWith('--')) || null;
 
-const app = express();
-app.use(cors());
+const isService = flags.has('service') || process.env.ATT_SERVICE_MODE === '1';
+const wantAgent = flags.has('agent') || command === 'agent';
+const wantDoctor = flags.has('doctor') || command === 'doctor';
+const wantPaths = flags.has('print-paths') || command === 'paths';
+const wantVersion = flags.has('version') || command === 'version';
 
-// request log (compact)
-app.use((req, res, next) => {
-  const t0 = Date.now();
-  res.on('finish', () => {
-    if (req.path.startsWith('/api'))
-      console.log(`${req.method} ${req.originalUrl} → ${res.statusCode} ${Date.now() - t0}ms`);
-  });
-  next();
-});
-
-app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
-// Machine-to-machine route checks its own secret before parsing larger
-// attendance batches, and does not use the interactive APP_PASSWORD token.
-app.use('/api/bridge', require('./routes/bridge'));
-app.use(express.json({ limit: '1mb' }));
-app.use('/api/auth', require('./routes/auth').router);
-app.use('/api', require('./middleware/auth')); // active only when APP_PASSWORD set
-app.use('/api/teachers', require('./routes/teachers'));
-app.use('/api/shifts', require('./routes/shifts'));
-app.use('/api/attendance', require('./routes/attendance'));
-app.use('/api/dashboard', require('./routes/dashboard'));
-app.use('/api/device', require('./routes/device'));
-
-app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
-
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  console.error('[api] error:', err);
-  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
-});
-
-// Serve the built SPA when available (single-port production mode).
-const webDist = path.resolve(__dirname, '../../web/dist');
-if (fs.existsSync(webDist)) {
-  app.use(express.static(webDist));
-  app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(webDist, 'index.html')));
+/* ── log to file so the installed app can show/support itself ──────────── */
+// Always on unless explicitly disabled with ATT_LOG_FILE=off: the desktop app,
+// the Windows service and `att --doctor` all read this file back through
+// GET /api/system/logs.
+if (process.env.ATT_LOG_FILE !== 'off') {
+  attachFileLog(process.env.ATT_LOG_FILE || config.paths.logFile);
 }
 
-app.listen(config.port, config.host, () => {
+function banner(runtime) {
   console.log('────────────────────────────────────────────────');
-  console.log(` ATT API listening on http://${config.host}:${config.port}`);
+  console.log(` ATT ${config.version} · listening on ${runtime.url}`);
   console.log(` ZKTeco mode: ${config.zk.mode} @ ${config.zk.ip}:${config.zk.port}`);
   console.log(` DB: ${config.dbPath}`);
+  console.log(` Settings: ${config.paths.settingsFile}`);
+  if (isService) console.log(' Running as a Windows service (logs mirrored to file)');
   console.log('────────────────────────────────────────────────');
-  startPoller();
+}
+
+async function main() {
+  if (wantVersion) {
+    console.log(config.version);
+    return;
+  }
+  if (wantPaths) {
+    console.log(JSON.stringify(config.paths, null, 2));
+    return;
+  }
+  if (wantAgent) {
+    await require('./agent').run();
+    return;
+  }
+  if (wantDoctor) {
+    const { runDoctor } = require('./doctor');
+    const ok = await runDoctor({ json: flags.has('json') });
+    process.exitCode = ok ? 0 : 1;
+    return;
+  }
+
+  const { bootServer } = require('./bootstrap');
+  let runtime;
+  try {
+    runtime = await bootServer({
+      port: opts.port ? parseInt(opts.port, 10) : undefined,
+      host: opts.host,
+      poll: !flags.has('no-poll'),
+      mode: isService ? 'service' : 'desktop',
+    });
+  } catch (err) {
+    if (err && err.code === 'INSTANCE_RUNNING') {
+      // The desktop shell reads this to attach to the running instance instead
+      // of showing an error.
+      console.error(`[att] ${err.message}`);
+      console.error(`[att] existing instance: ${JSON.stringify(err.instance)}`);
+      flushSync();
+      process.exit(3);
+    }
+    throw err;
+  }
+  banner(runtime);
+
+  const shutdown = async (signal) => {
+    console.log(`[att] ${signal} received — shutting down`);
+    try {
+      await runtime.close();
+    } catch (err) {
+      console.error(`[att] shutdown error: ${err.message}`);
+    }
+    flushSync();
+    process.exit(0);
+  };
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  // The Electron shell closes stdin when it exits; the child must follow.
+  process.on('disconnect', () => shutdown('disconnect'));
+  // Graceful shutdown requested through POST /api/system/shutdown.
+  process.on('att:shutdown', () => shutdown('shutdown requested by the desktop app'));
+  if (process.env.ATT_WATCH_PARENT === '1' && process.ppid && process.platform !== 'win32') {
+    const ppid = process.ppid;
+    const watcher = setInterval(() => {
+      try {
+        process.kill(ppid, 0);
+      } catch (_) {
+        clearInterval(watcher);
+        shutdown('parent exited');
+      }
+    }, 2000);
+    watcher.unref();
+  }
+}
+
+main().catch((err) => {
+  console.error(`[att] fatal: ${err && err.stack ? err.stack : err}`);
+  flushSync();
+  process.exit(1);
 });
+
+module.exports = { settings };

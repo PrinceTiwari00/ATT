@@ -1,0 +1,31 @@
+{
+  "name": "att-desktop",
+  "productName": "ATT Attendance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ATT — ZKTeco integrated attendance tracking, packaged as an installable Windows application",
+  "author": {
+    "name": "ATT Project",
+    "email": "support@att.local"
+  },
+  "license": "MIT",
+  "main": "src/main.js",
+  "scripts": {
+    "assets": "node scripts/make-assets.mjs",
+    "bundle:web": "npm --prefix ../web ci --no-audit --no-fund && npm --prefix ../web run build",
+    "bundle:server": "node scripts/bundle-server.mjs",
+    "fetch:runtime": "node scripts/fetch-runtime.mjs",
+    "fetch:service": "node scripts/fetch-service-wrapper.mjs",
+    "payload": "node scripts/prepare-payload.mjs",
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "44.6.0",
+    "electron-builder": "26.17.0",
+    "esbuild": "0.28.2",
+    "sharp": "0.35.5"
+  }
+}

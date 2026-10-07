@@ -1,5 +1,10 @@
 # Connecting Your ZKTeco Device to ATT
 
+> **💡 Installed Windows app?** Skip the manual §2: open **Connect Device** in
+> ATT. It shows this PC's networks, *scans the LAN for terminals on port 4370*,
+> runs the checklist below as an interactive report (with the fix for each
+> failure), and applies the new address without a restart.
+
 > **✅ This site's device (verified 2026-09-30):** ZKTeco **K14** @
 > **`192.168.1.110:4370`** · firmware 4.0.1 (build 74) · ZKFinger VX10.0 ·
 > SN `ONP6080486080200092` · DHCP **Off** · Comm Key (Password) **= 0**.
