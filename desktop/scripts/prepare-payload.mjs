@@ -10,6 +10,10 @@
  *   node scripts/prepare-payload.mjs                strict (CI)
  *   node scripts/prepare-payload.mjs --optional     tolerate missing downloads
  *   node scripts/prepare-payload.mjs --skip-assets  reuse existing assets
+ *   node scripts/prepare-payload.mjs --verify-only  just print the manifest and
+ *                                                   fail if the payload is
+ *                                                   incomplete (used by CI when
+ *                                                   the four steps ran singly)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,8 +22,10 @@ import { spawnSync } from 'node:child_process';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(here, '..');
+const repoRoot = path.resolve(desktopRoot, '..');
 const optional = process.argv.includes('--optional') || process.argv.includes('--dev');
 const skipAssets = process.argv.includes('--skip-assets');
+const verifyOnly = process.argv.includes('--verify-only');
 const isCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
 
 function run(script, extra = []) {
@@ -30,20 +36,36 @@ function run(script, extra = []) {
   }
 }
 
-if (!skipAssets) {
-  try {
-    run('make-assets.mjs');
-  } catch (err) {
-    console.error(err);
-    process.exit(1);
+/**
+ * bundle-server.mjs needs web/dist. Build it here rather than assume a previous
+ * step did — a missing dashboard build is the easiest way to get an installer
+ * that serves a blank page (or a red CI job).
+ */
+function ensureWebBuild() {
+  if (fs.existsSync(path.join(repoRoot, 'web', 'dist', 'index.html'))) return;
+  console.log('[payload] web/dist missing — building the dashboard first');
+  const webDir = path.join(repoRoot, 'web');
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const args = ['run', 'build', '--prefix', process.platform === 'win32' ? `"${webDir}"` : webDir];
+  const res = spawnSync(npm, args, { stdio: 'inherit', cwd: repoRoot, shell: process.platform === 'win32' });
+  if (res.status !== 0) {
+    console.error('[payload] dashboard build failed (exit ' + res.status + ')');
+    process.exit(res.status || 1);
   }
-} else {
-  console.log('[payload] reusing existing assets');
 }
 
-run('bundle-server.mjs');
-run('fetch-runtime.mjs', optional && !isCI ? ['--optional'] : []);
-run('fetch-service-wrapper.mjs', optional && !isCI ? ['--optional'] : []);
+if (!verifyOnly) {
+  if (!skipAssets) {
+    run('make-assets.mjs');
+  } else {
+    console.log('[payload] reusing existing assets');
+  }
+
+  ensureWebBuild();
+  run('bundle-server.mjs');
+  run('fetch-runtime.mjs', optional && !isCI ? ['--optional'] : []);
+  run('fetch-service-wrapper.mjs', optional && !isCI ? ['--optional'] : []);
+}
 
 /* ── manifest ──────────────────────────────────────────────────────────── */
 const payloadDir = path.join(desktopRoot, 'dist', 'payload');
