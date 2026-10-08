@@ -4,7 +4,24 @@
 const express = require('express');
 const { getDb } = require('../db/connection');
 const { getManager } = require('../zk/manager');
-const { recomputeRange } = require('../services/processor');
+const { recomputeRange, adoptAndRecompute } = require('../services/processor');
+
+/**
+ * Something changed the roster (a profile was created, edited or imported).
+ * Two things must follow, in this order:
+ *   1. adopt punches that arrived before their profile existed, and
+ *   2. rebuild the affected days (plus today, so the roster change is visible
+ *      in the current ledger immediately).
+ */
+function refreshAfterRosterChange({ includeToday = true } = {}) {
+  try {
+    return adoptAndRecompute({ includeToday });
+  } catch (err) {
+    // never fail the write because a rebuild hiccuped — the poller retries
+    console.error(`[teachers] post-write recompute failed: ${err.message}`);
+    return { linked: 0, days: [] };
+  }
+}
 
 const router = express.Router();
 
@@ -28,7 +45,10 @@ function validateTeacher(body, { partial = false } = {}) {
       errors.push("designation must be 'Teacher' or 'Staff'");
   }
   if (!partial || body.shift_id !== undefined) {
-    pick.shift_id = body.shift_id === null || body.shift_id === '' ? null : Number(body.shift_id);
+    // Omitting shift_id entirely is legitimate (the profile falls back to the
+    // default shift) — it must become NULL, not Number(undefined) → NaN → 422.
+    const raw = body.shift_id;
+    pick.shift_id = raw === null || raw === undefined || raw === '' ? null : Number(raw);
     if (pick.shift_id !== null && !Number.isInteger(pick.shift_id)) errors.push('shift_id must be an integer or null');
   }
   if (!partial || body.email !== undefined) {
@@ -99,6 +119,11 @@ router.post('/', async (req, res) => {
       .run({ status: 'active', department: 'General', designation: 'Teacher', ...data });
     const created = db.prepare('SELECT * FROM teachers WHERE id = ?').get(info.lastInsertRowid);
 
+    // This person may already have punched on the terminal (the device was
+    // synced before their profile existed) — adopt those rows and rebuild the
+    // days, including today so they appear in the ledger straight away.
+    const adoption = refreshAfterRosterChange({ includeToday: created.status === 'active' });
+
     let pushResult = null;
     if (req.body.pushToDevice) {
       try {
@@ -108,7 +133,11 @@ router.post('/', async (req, res) => {
         pushResult = { ok: false, error: err.message };
       }
     }
-    res.status(201).json({ data: created, devicePush: pushResult });
+    res.status(201).json({
+      data: created,
+      devicePush: pushResult,
+      linkedPunches: adoption.linked,
+    });
   } catch (err) {
     if (/UNIQUE/.test(err.message))
       return res.status(409).json({ error: `ZKTeco User ID "${data.zk_user_id}" is already registered` });
@@ -149,13 +178,17 @@ router.put('/:id', (req, res) => {
     recomputeRange(from, today); // cheap enough; keeps reports consistent
   }
 
+  // A changed zk_user_id leaves its punches orphaned until they are adopted
+  // again; any roster edit should also be visible in today's ledger.
+  const adoption = refreshAfterRosterChange();
+
   const row = db
     .prepare(
       `SELECT t.*, s.name AS shift_name FROM teachers t
        LEFT JOIN shifts s ON s.id = t.shift_id WHERE t.id = ?`
     )
     .get(req.params.id);
-  res.json({ data: row });
+  res.json({ data: row, linkedPunches: adoption.linked });
 });
 
 /* Delete */
@@ -173,6 +206,14 @@ router.post('/:id/push-to-device', async (req, res) => {
   const db = getDb();
   const t = db.prepare('SELECT * FROM teachers WHERE id = ?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'Teacher not found' });
+
+  // Refuse before touching the network when the connected library has no
+  // user-enrollment API (node-zklib 1.x) — with the terminal-side workaround.
+  const caps = getManager().capabilities();
+  if (caps && caps.canWriteUsers === false) {
+    return res.status(422).json({ ok: false, error: caps.writeUsersHint, capabilities: caps });
+  }
+
   try {
     await getManager().setUser({ userId: t.zk_user_id, name: t.full_name });
     res.json({ ok: true, message: `Enrolled ${t.full_name} (ID ${t.zk_user_id}) on the device` });

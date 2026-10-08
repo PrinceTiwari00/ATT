@@ -182,6 +182,24 @@ class ZKManager {
     return this.call(`setUser(${payload.userId})`, (d) => d.setUser(payload));
   }
 
+  /**
+   * What the active adapter can really do. `canWriteUsers === false` means the
+   * connected library has no user-enrollment API (node-zklib 1.x) — the UI
+   * disables "push to device" and explains the terminal-side workaround instead
+   * of failing after the click. `null` = unknown (bridge mode).
+   */
+  capabilities() {
+    const device = this.device;
+    if (device && typeof device.capabilities === 'function') {
+      try {
+        return device.capabilities();
+      } catch (err) {
+        return { source: this.mode, error: err.message, canWriteUsers: null };
+      }
+    }
+    return { source: this.mode, canWriteUsers: null };
+  }
+
   status() {
     return {
       mode: this.mode,
@@ -193,6 +211,7 @@ class ZKManager {
       pollerBusy: this.busy,
       reconfiguredAt: this.reconfiguredAt,
       bridge: this.mode === 'bridge' ? getAgentStatus() : null,
+      capabilities: this.capabilities(),
       lastSyncAt: this.lastSyncAt,
       lastSyncResult: this.lastSyncResult,
       lastError: this.lastError,

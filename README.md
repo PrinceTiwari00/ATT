@@ -66,8 +66,15 @@ npm --prefix server start     # API on :4000 — UI + API on ONE port
 
 First boot auto-migrates an empty database and opens on the guided setup:
 **Shifts → Teachers (Add or Import-from-device) → Device & Sync (Test link,
-push/pull enrollments)**. The poller pulls new punches every
+pull logs, pull/import device users)**. The poller pulls new punches every
 `POLL_INTERVAL_MINUTES` (default 1).
+
+Enrollment flow: `node-zklib` 1.x can read users and logs but has **no API to
+write users**, so people are enrolled on the terminal keypad and pulled in with
+*Fetch device users → Import* (punches already in the ledger are linked and
+their days rebuilt automatically). The Device page detects this and disables
+the push button with the same explanation; if a future library version adds a
+write API, `GET /api/device/status` reports it and the button re-enables.
 
 For development hot-reload instead: `npm run dev` (API :4000 + Vite :5173).
 A systemd unit and reverse-proxy notes are in

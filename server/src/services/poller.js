@@ -15,7 +15,7 @@
 const config = require('../config');
 const { getDb, tx } = require('../db/connection');
 const { getManager } = require('../zk/manager');
-const { recomputeDate } = require('./processor');
+const { recomputeDate, adoptOrphanPunches } = require('./processor');
 const { todayStr } = require('../zk/deviceContract');
 
 let timer = null;
@@ -71,6 +71,13 @@ async function syncOnce(trigger = 'poll') {
       }
     });
 
+    // Rows the previous polls stored before their teacher profile existed are
+    // adopted here, so the days they touch are rebuilt in this same pass. (A
+    // fresh install that synced first and registered staff second would
+    // otherwise leave that history showing "absent" forever.)
+    const adopted = adoptOrphanPunches();
+    for (const day of adopted.dates) affectedDates.add(day);
+
     if (config.poll.alwaysReprocessToday) affectedDates.add(todayStr());
     let processedTeachers = 0;
     for (const dateStr of affectedDates) {
@@ -82,6 +89,7 @@ async function syncOnce(trigger = 'poll') {
       trigger,
       fetched: records.length,
       inserted,
+      adoptedPunches: adopted.linked,
       daysRecomputed: affectedDates.size,
       unknownDeviceIds: [...unknownIds],
       durationMs: Date.now() - started,
