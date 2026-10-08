@@ -84,6 +84,10 @@ export default function Device() {
 
   const bridgeOnline = status?.mode !== 'bridge' || status?.bridge?.online;
   const ok = Boolean(status && bridgeOnline && status.circuit !== 'open');
+  // false = the connected library genuinely has no user-enrollment API
+  // (node-zklib 1.x); null/undefined = unknown (bridge) → still offer the action.
+  const caps = status?.capabilities;
+  const canWriteUsers = !caps || caps.canWriteUsers !== false;
 
   return (
     <div className="anim-in grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -185,11 +189,27 @@ export default function Device() {
             </div>
             <div className="flex gap-2">
               <button className="btn-ghost" onClick={fetchUsers}><CloudDownload size={15} /> Fetch device users</button>
-              <button className="btn-success" onClick={pushAll} disabled={pushing}>
+              <button
+                className="btn-success"
+                onClick={pushAll}
+                disabled={pushing || !canWriteUsers}
+                title={canWriteUsers ? undefined : caps.writeUsersHint}
+              >
                 <CloudUpload size={15} className={pushing ? 'animate-pulse' : ''} /> {pushing ? 'Pushing…' : 'Push all teachers → device'}
               </button>
             </div>
           </div>
+
+          {!canWriteUsers && (
+            <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[12px] leading-snug text-amber-800">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>
+                <b>Enrollment from ATT is unavailable with the connected library</b> ({caps.library}{caps.libraryVersion ? ` v${caps.libraryVersion}` : ''}).
+                Enroll people on the terminal instead — <b>Menu → User Mgt → New User</b> — then pull them in with <b>Fetch device users → Import</b>.
+                Pulling punches is unaffected.
+              </span>
+            </div>
+          )}
 
           {unknown.length > 0 && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">

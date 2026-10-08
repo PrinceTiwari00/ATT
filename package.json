@@ -1,6 +1,6 @@
 {
   "name": "att-zkteco-attendance",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "ZKTeco-integrated Attendance Tracking System for school teachers & staff",
   "scripts": {

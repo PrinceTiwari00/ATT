@@ -6,6 +6,7 @@ const express = require('express');
 const { getDb } = require('../db/connection');
 const { getManager } = require('../zk/manager');
 const { syncOnce } = require('../services/poller');
+const { adoptAndRecompute } = require('../services/processor');
 
 const router = express.Router();
 
@@ -82,12 +83,11 @@ router.post('/users/import', (req, res) => {
     db.exec('ROLLBACK');
     throw err;
   }
-  // newly imported teachers may already have orphan logs → link them now
-  db.prepare(
-    `UPDATE attendance_logs SET teacher_id = (SELECT id FROM teachers WHERE teachers.zk_user_id = attendance_logs.zk_user_id)
-     WHERE teacher_id IS NULL AND EXISTS (SELECT 1 FROM teachers WHERE teachers.zk_user_id = attendance_logs.zk_user_id)`
-  ).run();
-  res.json({ ok: true, imported });
+  // Newly imported teachers almost always already own punches on the terminal
+  // (this route exists precisely for that case). Link those rows AND rebuild the
+  // days they touch — linking alone leaves stale "absent" summaries behind.
+  const adoption = adoptAndRecompute({ includeToday: imported > 0 });
+  res.json({ ok: true, imported, linkedPunches: adoption.linked, daysRecomputed: adoption.days.length });
 });
 
 /** Push EVERY active teacher's enrollment to the device. */
@@ -95,6 +95,19 @@ router.post('/users/push-all', async (req, res) => {
   const db = getDb();
   const teachers = db.prepare("SELECT zk_user_id, full_name FROM teachers WHERE status = 'active'").all();
   const manager = getManager();
+
+  // The connected library may have no user-writing API at all (node-zklib 1.x):
+  // say so once, with the terminal-side workaround, instead of failing per
+  // teacher with an opaque protocol error.
+  const caps = manager.capabilities();
+  if (caps && caps.canWriteUsers === false) {
+    return res.status(422).json({
+      ok: false,
+      error: caps.writeUsersHint,
+      data: { total: teachers.length, pushed: 0, results: [], capabilities: caps },
+    });
+  }
+
   const results = [];
   for (const t of teachers) {
     try {

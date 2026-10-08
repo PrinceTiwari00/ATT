@@ -13,6 +13,7 @@
  */
 const { getDb, tx } = require('../db/connection');
 const { evaluateDay } = require('../utils/attendanceLogic');
+const { todayStr } = require('../zk/deviceContract');
 
 function getDefaultShift(db) {
   return (
@@ -106,6 +107,64 @@ function recomputeRange(from, to) {
 }
 
 /**
+ * Link punches that were pulled BEFORE their teacher profile existed.
+ *
+ * Every punch is stored immediately with its durable `zk_user_id`; `teacher_id`
+ * is a derived pointer that can only be filled once a profile with that
+ * enrollment ID exists. Without this pass a school that syncs the terminal
+ * first and registers staff second keeps `teacher_id = NULL` rows forever — the
+ * punches are in the ledger but invisible to the daily engine, so everybody
+ * shows up absent for history the device already reported.
+ *
+ * Only the derived pointer is rewritten (raw rows are never deleted, moved or
+ * given a new punch time). Returns the work dates that need recomputing.
+ */
+function adoptOrphanPunches() {
+  const db = getDb();
+  const dates = db
+    .prepare(
+      `SELECT DISTINCT substr(punch_time, 1, 10) AS work_date
+       FROM attendance_logs
+       WHERE teacher_id IS NULL
+         AND EXISTS (SELECT 1 FROM teachers WHERE teachers.zk_user_id = attendance_logs.zk_user_id)`
+    )
+    .all()
+    .map((r) => r.work_date);
+
+  if (dates.length === 0) return { linked: 0, dates: [] };
+
+  const info = db
+    .prepare(
+      `UPDATE attendance_logs
+          SET teacher_id = (SELECT id FROM teachers WHERE teachers.zk_user_id = attendance_logs.zk_user_id)
+        WHERE teacher_id IS NULL
+          AND EXISTS (SELECT 1 FROM teachers WHERE teachers.zk_user_id = attendance_logs.zk_user_id)`
+    )
+    .run();
+
+  return { linked: info.changes, dates };
+}
+
+/**
+ * Adopt orphans and rebuild exactly the days they touch — this is what every
+ * roster write (teacher created/edited/imported) and every poll calls so the
+ * daily summaries never lag behind the raw ledger.
+ */
+function adoptAndRecompute({ includeToday = false } = {}) {
+  const { linked, dates } = adoptOrphanPunches();
+  const today = todayStr();
+  const days = new Set(dates.filter((d) => d && d <= today)); // never materialize future days
+  if (includeToday) days.add(today);
+
+  const recomputed = [];
+  for (const day of days) {
+    recomputeDate(day);
+    recomputed.push(day);
+  }
+  return { linked, days: recomputed };
+}
+
+/**
  * Lazily ensure dates have been processed before serving a view (covers gap
  * days when the service was down). Only backdates ≤ today.
  */
@@ -126,4 +185,13 @@ function ensureProcessed(from, to) {
   }
 }
 
-module.exports = { recomputeTeacherDate, recomputeDate, recomputeRange, ensureProcessed, resolveShift, getDefaultShift };
+module.exports = {
+  recomputeTeacherDate,
+  recomputeDate,
+  recomputeRange,
+  ensureProcessed,
+  adoptOrphanPunches,
+  adoptAndRecompute,
+  resolveShift,
+  getDefaultShift,
+};

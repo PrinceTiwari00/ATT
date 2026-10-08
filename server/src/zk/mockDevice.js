@@ -176,6 +176,21 @@ class MockZKDevice {
     return { ok: true };
   }
 
+  /** Capabilities of the simulator — everything works. */
+  capabilities() {
+    return {
+      source: 'mock',
+      library: null,
+      libraryVersion: null,
+      installed: true,
+      canFetchAttendance: true,
+      canFetchUsers: true,
+      canClearAttendance: true,
+      canWriteUsers: true,
+      availableMethods: [],
+    };
+  }
+
   async clearAttendance() {
     await this.simulateNetwork();
     return { ok: true, note: 'simulation keeps generated history' };

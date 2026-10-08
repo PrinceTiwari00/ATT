@@ -158,6 +158,120 @@ test('GET /api/system/service is honest off-Windows', async () => {
   assert.equal(data.supported, process.platform === 'win32');
 });
 
+/* ── roster writes vs. the raw ledger (fresh-install flow) ──────────────── */
+
+const { getDb } = require('../src/db/connection');
+const { todayStr } = require('../src/zk/deviceContract');
+
+const postJson = (url, body) =>
+  fetch(`${base}${url}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+test('POST /api/teachers accepts a profile with no shift_id (falls back to the default shift)', async () => {
+  const res = await postJson('/api/teachers', { zk_user_id: '201', full_name: 'Roshan No-Shift' });
+  const body = await json(res);
+  assert.equal(res.status, 201, JSON.stringify(body));
+  assert.equal(body.data.shift_id, null);
+  assert.equal(body.data.zk_user_id, '201');
+});
+
+test('GET /api/device/status reports library capabilities (mock: everything writable)', async () => {
+  const { data } = await json(await fetch(`${base}/api/device/status`));
+  assert.ok(data.capabilities, 'capabilities must be part of the device status payload');
+  assert.equal(data.capabilities.source, 'mock');
+  assert.equal(data.capabilities.canFetchAttendance, true);
+  assert.equal(data.capabilities.canWriteUsers, true);
+});
+
+test('history pulled BEFORE a teacher was registered is not lost (adopt on create)', async () => {
+  const db = getDb();
+  const today = todayStr();
+  const zkId = '301';
+
+  // Give the profile a deterministic shift so the expected status is exact.
+  const shiftRes = await postJson('/api/shifts', {
+    name: 'System-test shift',
+    start_time: '08:00',
+    end_time: '16:00',
+    grace_period_minutes: 10,
+  });
+  const shiftBody = await json(shiftRes);
+  assert.equal(shiftRes.status, 201, JSON.stringify(shiftBody));
+  const shift = shiftBody.data;
+
+  // What the very first poll stores: punches with no profile to point at.
+  const insertLog = db.prepare(
+    `INSERT OR IGNORE INTO attendance_logs (teacher_id, zk_user_id, device_sn, punch_time, punch_type, source)
+     VALUES (NULL, ?, 'TEST-SN', ?, 0, 'device')`
+  );
+  insertLog.run(zkId, `${today}T07:55:00`);
+  insertLog.run(zkId, `${today}T16:05:00`);
+  assert.equal(
+    db.prepare('SELECT COUNT(*) c FROM attendance_logs WHERE zk_user_id = ? AND teacher_id IS NULL').get(zkId).c,
+    2,
+    'precondition: the punches the school already synced are orphaned'
+  );
+
+  const createRes = await postJson('/api/teachers', {
+    zk_user_id: zkId,
+    full_name: 'Ram Bahadur',
+    shift_id: shift.id,
+  });
+  const created = await json(createRes);
+  assert.equal(createRes.status, 201, JSON.stringify(created));
+  const teacherId = created.data.id;
+  assert.equal(created.linkedPunches, 2, 'creating the profile must adopt the punches it already owns');
+
+  const linked = db
+    .prepare('SELECT teacher_id FROM attendance_logs WHERE zk_user_id = ? GROUP BY teacher_id')
+    .all(zkId);
+  assert.deepEqual(linked.map((r) => r.teacher_id), [teacherId]);
+
+  const daily = await json(await fetch(`${base}/api/attendance/daily?date=${today}`));
+  const row = daily.data.find((r) => r.zk_user_id === zkId);
+  assert.ok(row, 'the new profile must appear in today\'s ledger without waiting for the next poll');
+  assert.equal(row.status, 'on_time');
+  assert.equal(row.punch_count, 2);
+  assert.equal(row.check_in, `${today}T07:55:00`);
+  assert.equal(row.check_out, `${today}T16:05:00`);
+});
+
+test('POST /api/device/users/import links existing punches AND rebuilds their days', async () => {
+  const db = getDb();
+  const today = todayStr();
+  const zkId = '401';
+
+  // A device user nobody registered, who has been punching for a week.
+  const insertLog = db.prepare(
+    `INSERT OR IGNORE INTO attendance_logs (teacher_id, zk_user_id, punch_time, punch_type, source)
+     VALUES (NULL, ?, ?, 0, 'device')`
+  );
+  const yesterday = new Date(`${today}T00:00:00`);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const y = yesterday.toISOString().slice(0, 10);
+  insertLog.run(zkId, `${y}T08:05:00`);
+  insertLog.run(zkId, `${y}T16:10:00`);
+
+  const res = await postJson('/api/device/users/import', {
+    users: [{ userId: zkId, name: 'Sita Kumari' }],
+  });
+  const body = await json(res);
+  assert.equal(res.status, 200, JSON.stringify(body));
+  assert.equal(body.imported, 1);
+  assert.ok(body.linkedPunches >= 2, 'the import must link the punches already in the ledger');
+  assert.ok(body.daysRecomputed >= 1);
+
+  // The linked day must now be a real summary, not a stale "absent".
+  const daily = await json(await fetch(`${base}/api/attendance/daily?date=${y}&q=Sita`));
+  const row = daily.data.find((r) => r.zk_user_id === zkId);
+  assert.ok(row);
+  assert.equal(row.punch_count, 2);
+  assert.notEqual(row.status, 'absent');
+});
+
 test('POST /api/system/shutdown accepts loopback when auth is off (no exit in tests)', async () => {
   const res = await fetch(`${base}/api/system/shutdown`, { method: 'POST' });
   // loopback + no APP_PASSWORD → allowed. In this test process nobody listens
@@ -177,3 +291,4 @@ test('a second backend on the same ATT home is refused (instance lock)', async (
     assert.equal(err.code, 'INSTANCE_RUNNING');
   }
 });
+

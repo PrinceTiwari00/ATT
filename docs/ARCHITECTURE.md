@@ -148,7 +148,10 @@ memory. `server/src/agent.js` makes outbound HTTPS polls using
 `DEVICE_BRIDGE_TOKEN`, executes them through `RealZKDevice` on the school LAN,
 and posts the result. The attendance poller then uses its normal idempotent
 SQLite ingestion and processing path. The same bridge supports interactive
-user import and enrollment push from the Device page.
+user import from the Device page; enrollment *push* appears only when the
+`node-zklib` version on the agent machine provides a user-writing API (1.x does
+not — the terminal keypad is the supported enrollment path, followed by
+**Fetch device users → Import**).
 
 The agent does not listen for inbound connections, persist attendance, or
 expose TCP 4370. If the cloud process restarts, any in-flight command times out
@@ -188,6 +191,7 @@ Design rules that keep a school PC trustworthy:
 | Service and app share one database | machine-wide `ATT_HOME = %ProgramData%\ATT`, ACL granted to Users by the installer |
 | UI needs no staff password in-app | per-boot **loopback token** in `runtime.json`, honoured only for `127.0.0.1/::1` (`middleware/auth.js`) |
 | The device link survives a re-point | `ZKManager.reconfigure()` swaps the adapter live; `config.applySettings()` mutates the shared config in place |
+| The adapter survives library drift | `RealZKDevice` resolves every call through a `ZK_METHODS` alias map against the **installed** `node-zklib` (e.g. logs = `getAttendances`, never the non-existent singular) and raises an actionable error for methods that version lacks; `GET /api/device/status` reports `capabilities` so the UI disables enrollment push instead of failing after the click (`server/test/zkLibraryContract.test.js` locks this in) |
 | Port conflicts never brick the app | packaged mode falls back to a free port and publishes the real URL in `runtime.json` |
 | Crash resilience | shell restarts a dead backend with backoff; WinSW restarts the service; circuit breaker protects the terminal |
 

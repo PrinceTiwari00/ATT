@@ -223,7 +223,10 @@ With `web/dist` present, the API serves the UI on the same port
 | `ETIMEDOUT` / `EHOSTUNREACH` | Wrong IP, different subnet, no route, client isolation | §1.1, §5 ping test |
 | `ECONNREFUSED` | Wrong port, or device needs reboot after config | §1.3, reboot terminal |
 | Connects, then silent / errors on commands | Comm Key ≠ 0 | §1.2 |
-| `getAttendance` returns 0 rows | Device memory genuinely empty, or logs were cleared | Enroll & punch on the terminal, then Fetch logs now |
-| Push enrollment fails | `uid` field constraints vary by firmware | Enroll on the keypad instead, then Import (§4A) — always works |
+| `zk.getAttendance is not a function` | Old build calling a method the library never had (`node-zklib` ships the plural `getAttendances`) | Update to ATT 1.0.1 or newer — the adapter now resolves the name the installed library actually exposes |
+| Log pull returns 0 rows | Device memory genuinely empty, or logs were cleared | Enroll & punch on the terminal, then Fetch logs now |
+| `[object Object]` in a device error | Old build stringified `node-zklib`'s `ZKError`, which is not an `Error` (its cause lives in `.err`) | Update to ATT 1.0.1 or newer — errors read e.g. *“IP of the device is refused (ECONNREFUSED)”* |
+| “Push all teachers → device” is greyed out | The installed `node-zklib` (1.x) has no user-writing API, so ATT cannot enroll from software | That is expected: enroll on the terminal keypad, then **Fetch device users → Import** (§4A). Pulling punches is unaffected |
+| Push enrollment fails on an older build | `uid` field constraints vary by firmware | Enroll on the keypad instead, then Import (§4A) — always works |
 | Wrong late/early minutes | Device clock drift | §1.4, then *Recompute* from the Attendance API |
 | Everything was fine, now timeouts | Another management client stole the session | Close ZKTime/etc.; circuit breaker self-recovers in 1 min |
