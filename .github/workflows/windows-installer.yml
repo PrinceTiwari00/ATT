@@ -112,13 +112,56 @@ jobs:
           # electron-builder downloads the exact win-x64 Electron zip itself.
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
 
+      # The dashboard MUST be built here: bundle-server.mjs copies web/dist into
+      # the payload, and this job runs on a different machine than `payload`, so
+      # nothing is inherited. Skipping it fails the build (or ships a blank UI).
+      - name: Build the dashboard
+        run: npm run build --prefix web
+
       - name: Run server unit tests on Windows
         run: npm test --prefix server
 
-      - name: Assemble payload (assets, bundle, Node runtime, WinSW)
-        run: node desktop/scripts/prepare-payload.mjs
+      # Split into one step per script so a red run names the exact failure
+      # (runner logs live on a blob host that is not always reachable).
+      - name: Payload 1/4 - visual assets (icon.ico, tray icons, favicon)
+        run: node desktop/scripts/make-assets.mjs
+
+      - name: Payload 2/4 - bundle backend (server.cjs + web + packaged.json)
+        run: node desktop/scripts/bundle-server.mjs
+
+      - name: Payload 3/4 - Node runtime (payload/runtime/node.exe)
+        run: node desktop/scripts/fetch-runtime.mjs
         env:
           CI: "true"
+
+      - name: Payload 4/4 - WinSW service wrapper (service/att-service.exe)
+        run: node desktop/scripts/fetch-service-wrapper.mjs
+        env:
+          CI: "true"
+
+      - name: Payload manifest + completeness gate
+        run: node desktop/scripts/prepare-payload.mjs --verify-only
+        env:
+          CI: "true"
+
+      - name: Report what is missing (annotations are readable without logs)
+        if: failure()
+        shell: pwsh
+        run: |
+          $expected = [ordered]@{
+            'web/dist/index.html'              = 'web/dist/index.html'
+            'desktop/dist/payload/server.cjs'  = 'desktop/dist/payload/server.cjs'
+            'desktop/dist/payload/packaged.json' = 'desktop/dist/payload/packaged.json'
+            'desktop/dist/payload/runtime/node.exe' = 'desktop/dist/payload/runtime/node.exe'
+            'desktop/service/att-service.exe'  = 'desktop/service/att-service.exe'
+            'desktop/build/icon.ico'           = 'desktop/build/icon.ico'
+            'desktop/build/installer.nsh'      = 'desktop/build/installer.nsh'
+          }
+          $missing = @()
+          foreach ($k in $expected.Keys) { if (-not (Test-Path $k)) { $missing += $k } }
+          Write-Host "::error title=Payload incomplete::missing: $($missing -join ' | ')"
+          Get-ChildItem -Recurse desktop/dist, desktop/build, desktop/service -ErrorAction SilentlyContinue |
+            Select-Object -First 40 FullName, Length | Format-Table -AutoSize | Out-String | Write-Host
 
       - name: Pack the NSIS installer
         working-directory: desktop
