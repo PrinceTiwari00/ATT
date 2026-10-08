@@ -48,8 +48,9 @@ win:
   # background service triggers exactly one UAC prompt through PowerShell.
   requestedExecutionLevel: asInvoker
   artifactName: ${productName}-Setup-${version}.${ext}
-  publisherName: ATT Project
-  fileDescription: ZKTeco integrated attendance tracking
+  # The publisher shown by UAC/SmartScreen comes from package.json "author";
+  # the exe FileDescription comes from package.json "description".
+  # (win.publisherName / win.fileDescription do not exist in electron-builder 26.)
 
 nsis:
   oneClick: false
@@ -60,7 +61,6 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: ATT Attendance
   uninstallDisplayName: ATT Attendance
-  uninstallDescription: Attendance tracking for ZKTeco biometric terminals
   # Attendance history must survive an uninstall — the database lives in
   # C:\ProgramData\ATT and is only removed if the user ticks that box.
   deleteAppDataOnUninstall: false

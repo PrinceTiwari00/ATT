@@ -3,7 +3,7 @@
   "productName": "ATT Attendance",
   "version": "1.0.0",
   "private": true,
-  "description": "ATT — ZKTeco integrated attendance tracking, packaged as an installable Windows application",
+  "description": "ZKTeco integrated attendance tracking",
   "author": {
     "name": "ATT Project",
     "email": "support@att.local"
