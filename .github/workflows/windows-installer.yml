@@ -144,30 +144,17 @@ jobs:
         env:
           CI: "true"
 
-      - name: Report what is missing (annotations are readable without logs)
-        if: failure()
-        shell: pwsh
-        run: |
-          $expected = [ordered]@{
-            'web/dist/index.html'              = 'web/dist/index.html'
-            'desktop/dist/payload/server.cjs'  = 'desktop/dist/payload/server.cjs'
-            'desktop/dist/payload/packaged.json' = 'desktop/dist/payload/packaged.json'
-            'desktop/dist/payload/runtime/node.exe' = 'desktop/dist/payload/runtime/node.exe'
-            'desktop/service/att-service.exe'  = 'desktop/service/att-service.exe'
-            'desktop/build/icon.ico'           = 'desktop/build/icon.ico'
-            'desktop/build/installer.nsh'      = 'desktop/build/installer.nsh'
-          }
-          $missing = @()
-          foreach ($k in $expected.Keys) { if (-not (Test-Path $k)) { $missing += $k } }
-          Write-Host "::error title=Payload incomplete::missing: $($missing -join ' | ')"
-          Get-ChildItem -Recurse desktop/dist, desktop/build, desktop/service -ErrorAction SilentlyContinue |
-            Select-Object -First 40 FullName, Length | Format-Table -AutoSize | Out-String | Write-Host
-
       - name: Pack the NSIS installer
         working-directory: desktop
-        run: npx electron-builder --win --x64 --publish never
+        shell: pwsh
+        run: |
+          # Tee the output so the failure step below can quote it: runner logs
+          # live on a blob host that is not always reachable, annotations are.
+          npx electron-builder --win --x64 --publish never 2>&1 | Tee-Object -FilePath builder.log
+          exit $LASTEXITCODE
         env:
           CI: "true"
+          DEBUG: "electron-builder"
           # Unsigned build; add a certificate later via WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
@@ -211,3 +198,52 @@ jobs:
             --notes "$NOTES"
         env:
           GH_TOKEN: ${{ github.token }}
+
+      # Must be LAST: `if: failure()` only fires for steps evaluated after the
+      # failure. Emits the real error as check annotations + a step summary,
+      # because the raw job log lives on a blob host that is often unreachable.
+      - name: Diagnose failure (annotations + step summary)
+        if: failure()
+        shell: pwsh
+        run: |
+          $expected = @(
+            'web/dist/index.html',
+            'desktop/dist/payload/server.cjs',
+            'desktop/dist/payload/packaged.json',
+            'desktop/dist/payload/web/index.html',
+            'desktop/dist/payload/runtime/node.exe',
+            'desktop/service/att-service.exe',
+            'desktop/service/att-service.xml',
+            'desktop/build/icon.ico',
+            'desktop/build/installer.nsh',
+            'desktop/release'
+          )
+          $missing = @($expected | Where-Object { -not (Test-Path $_) })
+          if ($missing.Count -gt 0) {
+            Write-Host "::error title=Missing build inputs/outputs::$($missing -join ' | ')"
+          }
+
+          Get-ChildItem -Recurse desktop/dist, desktop/build, desktop/service, desktop/release `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 40 FullName, Length | Format-Table -AutoSize | Out-String | Write-Host
+
+          if (Test-Path desktop/builder.log) {
+            $lines = @(Get-Content desktop/builder.log)
+            Write-Host "electron-builder produced $($lines.Count) log lines"
+            $hits = @($lines | Where-Object {
+              $_ -match 'error|Error|ERROR|failed|Failed|cannot|Cannot|ENOTFOUND|ENOENT|404|not found|Unexpected|makensis|Error -'
+            })
+            if ($hits.Count -eq 0) { $hits = @($lines | Select-Object -Last 30) }
+            $i = 0
+            foreach ($h in @($hits | Select-Object -Last 14)) {
+              $t = ($h -replace '[\r\n]+', ' ').Trim()
+              if ($t.Length -gt 500) { $t = $t.Substring(0, 500) }
+              if ($t) { Write-Host "::error title=electron-builder[$i]::$t"; $i++ }
+            }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '### electron-builder output (last 120 lines)'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```text'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($lines | Select-Object -Last 120)
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+          } else {
+            Write-Host "::error title=No builder log::the pack step never produced desktop/builder.log"
+          }

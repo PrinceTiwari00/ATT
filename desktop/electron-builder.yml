@@ -31,8 +31,12 @@ extraResources:
       - "**/*"
   - from: service
     to: service
+    # BOTH files: installer.nsh runs `$INSTDIR\resources\service\att-service.exe`
+    # and paths.js/winService.js resolve the same pair. Shipping only the XML
+    # would install a service that cannot start.
     filter:
       - "att-service.xml"
+      - "att-service.exe"
 
 win:
   target:
