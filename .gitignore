@@ -1,5 +1,7 @@
 node_modules/
 dist/
+desktop/release/
+desktop/service/att-service.exe
 server/data/
 *.db
 *.db-wal

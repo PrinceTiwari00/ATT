@@ -9,12 +9,24 @@ export function setToken(t) {
   t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY);
 }
 
+/* Inside the installed Windows app the shell hands the UI a per-boot loopback
+   token, so the desktop never asks for the staff password. In a plain browser
+   window.att is undefined and the normal password flow applies. */
+let localTokenPromise = null;
+function localToken() {
+  if (typeof window === 'undefined' || !window.att?.localToken) return null;
+  if (!localTokenPromise) localTokenPromise = Promise.resolve(window.att.localToken()).catch(() => '');
+  return localTokenPromise;
+}
+
 async function request(path, options = {}) {
   const token = getToken();
+  const lt = await localToken();
   const res = await fetch(`/api${path}`, {
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { 'X-ATT-Token': token } : {}),
+      ...(lt ? { 'X-ATT-Local-Token': lt } : {}),
     },
     ...options,
   });
@@ -82,6 +94,20 @@ export const api = {
     request(`/device/users/import`, { method: 'POST', body: JSON.stringify({ users, ...extra }) }),
   pushAllTeachers: () => request(`/device/users/push-all`, { method: 'POST' }),
   unknownUsers: () => request(`/device/unknown-users`),
+
+  // system (installed Windows app + connection wizard)
+  systemInfo: () => request(`/system/info`),
+  systemNetwork: () => request(`/system/network`),
+  systemSettings: () => request(`/system/settings`),
+  saveSettings: (patch) => request(`/system/settings`, { method: 'PUT', body: JSON.stringify(patch) }),
+  probeDevice: (target) => request(`/system/device/probe`, { method: 'POST', body: JSON.stringify(target) }),
+  diagnose: (target) => request(`/system/diagnostics`, { method: 'POST', body: JSON.stringify(target) }),
+  discover: (options) => request(`/system/discover`, { method: 'POST', body: JSON.stringify(options || {}) }),
+  systemLogs: (lines = 300) => request(`/system/logs?lines=${lines}`),
+  serviceStatus: () => request(`/system/service`),
+  serviceControl: (action) => request(`/system/service`, { method: 'POST', body: JSON.stringify({ action }) }),
+  backupNow: (label) => request(`/system/backup`, { method: 'POST', body: JSON.stringify({ label }) }),
+  backups: () => request(`/system/backups`),
 };
 
 /* ── small formatting helpers ─────────────────────────────────────────── */

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Wifi, WifiOff, RefreshCw, Zap, CloudDownload, CloudUpload, Users,
-  Fingerprint, Activity, Database, AlertTriangle, Server, CheckCircle2,
+  Fingerprint, Activity, Database, AlertTriangle, Server, CheckCircle2, Radar,
 } from 'lucide-react';
 import { api, fmtTime } from '../api/client';
 import Modal from '../components/Modal';
@@ -163,6 +164,9 @@ export default function Device() {
               <CloudDownload size={15} className={syncing ? 'animate-bounce' : ''} /> {syncing ? 'Syncing…' : 'Fetch logs now'}
             </button>
           </div>
+          <Link to="/connect?diagnose=1" className="btn-ghost mt-2 w-full">
+            <Radar size={15} /> Connection wizard & network diagnostics
+          </Link>
           {status?.lastSyncResult && (
             <p className="text-center font-mono text-[11px] text-slate-400">
               last sync: {status.lastSyncResult.ok ? 'ok' : 'failed'} · fetched {status.lastSyncResult.fetched ?? 0} · inserted {status.lastSyncResult.inserted ?? 0} · {status.lastSyncResult.durationMs}ms
