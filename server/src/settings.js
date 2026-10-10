@@ -53,6 +53,12 @@ const FIELDS = [
   { key: 'device.port', env: 'ZK_PORT', type: 'int', min: 1, max: 65535, def: 4370, label: 'Device TCP port' },
   { key: 'device.timeoutMs', env: 'ZK_TIMEOUT_MS', type: 'int', min: 1000, max: 120000, def: 10000, label: 'Device timeout (ms)' },
   { key: 'device.inPort', env: 'ZK_INPORT', type: 'int', min: 1, max: 65535, def: 5200, label: 'UDP reply port' },
+  /* The terminal's connection password (Menu → COMM → Comm Key). 0 = the device
+     answers any client on the LAN; a non-zero key makes every other program
+     fail the handshake, so it cannot steal ATT's single management session.
+     Deliberately NOT masked: the operator has to be able to read it back to
+     type the same value on the device keypad. */
+  { key: 'device.commKey', env: 'ZK_COMM_KEY', type: 'int', min: 0, max: 4294967295, def: 0, label: 'Device Comm Key (password)' },
 
   // Background poller
   { key: 'poll.enabled', env: 'POLL_ENABLED', type: 'bool', def: true, label: 'Auto-sync enabled' },

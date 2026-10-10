@@ -25,6 +25,7 @@ const {
   classifyNetworkError,
 } = require('../src/zk/realDevice');
 const { ZKDeviceError, ZKConnectionError } = require('../src/zk/deviceContract');
+const { DeviceLock } = require('../src/zk/deviceLock');
 const { ZKError } = require('node-zklib/zkerror');
 
 const installed = require('node-zklib');
@@ -81,8 +82,17 @@ function makeStubLibrary({ records = [], users = [], connectBanner = 'ok tcp', e
   return { StubZKLib, calls };
 }
 
+/* Every adapter shares the process-wide device lock in production. Tests get a
+ * private one with no inter-session cool-down so back-to-back assertions do not
+ * trip the "terminal is busy" guard (that guard has its own test file). */
 const makeDevice = () =>
-  new RealZKDevice({ ip: '192.168.1.110', port: 4370, timeoutMs: 1500, inPort: 0 });
+  new RealZKDevice({
+    ip: '192.168.1.110',
+    port: 4370,
+    timeoutMs: 1500,
+    inPort: 0,
+    deviceLock: new DeviceLock({ name: 'test-zk', gapMs: 0, staleMs: 5000 }),
+  });
 
 /* ── the contract itself ────────────────────────────────────────────────── */
 

@@ -10,6 +10,12 @@
  *     it half-opens automatically for a probe attempt.
  *   • Observable state (status(), consumed by /api/device/status) so the UI can
  *     show exactly what the link is doing.
+ *   • EXCLUSIVE device access — every operation takes the process-wide session
+ *     lock (zk/deviceLock.js) before a socket is opened and holds it across
+ *     retries, so the poller, the UI buttons, the LAN sweep and the bridge
+ *     agent can never talk over each other. A refused second operation is a
+ *     DeviceBusyError: non-retryable, and it never counts against the circuit
+ *     breaker, because "ATT is already using the terminal" is not a fault.
  *
  *  The poller and all device routes MUST go through this manager — never
  *  instantiate adapters directly elsewhere.
@@ -21,6 +27,9 @@ const { MockZKDevice } = require('./mockDevice');
 const { BridgeZKDevice } = require('./bridgeDevice');
 const { getAgentStatus } = require('../services/deviceBridge');
 const { ZKConnectionError, ZKDeviceError } = require('./deviceContract');
+const { getDeviceLock, isBusyError, tuneDeviceLock } = require('./deviceLock');
+const settings = require('../settings');
+const { normalizeCommKey } = require('./commKey');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -49,8 +58,28 @@ class ZKManager {
     this.lastSyncAt = null;
     this.lastSyncResult = null; // { ok, fetched, inserted, processedDays, durationMs, error? }
     this.lastError = null;
-    this.busy = false; // poller re-entrancy guard
+    this.busy = false; // poller re-entrancy guard (a sync is running)
     this.reconfiguredAt = null;
+    this.lock = getDeviceLock();
+    tuneDeviceLock({ staleMs: config.zk.lock.staleMs, gapMs: config.zk.lock.gapMs });
+  }
+
+  /** Is the terminal in use by ATT right now (sync running or lock held)? */
+  isBusy() {
+    return Boolean(this.busy) || this.lock.locked;
+  }
+
+  /** Why it is busy — surfaced verbatim in the UI and in 409 responses. */
+  busyReason() {
+    const lock = this.lock.status();
+    if (this.busy && !lock.locked) return 'an attendance sync is in progress';
+    if (lock.owner) {
+      return `"${lock.owner.label}" is using the terminal (${(lock.owner.heldMs / 1000).toFixed(1)}s so far)`;
+    }
+    if (lock.cooldownRemainingMs > 0) {
+      return `the terminal is finishing the previous session (${lock.cooldownRemainingMs}ms cool-down)`;
+    }
+    return 'another device operation is in progress';
   }
 
   /** Adapter factory — also used by reconfigure() so modes can change at runtime. */
@@ -82,7 +111,12 @@ class ZKManager {
     this.nextAttemptAt = 0;
     this.lastError = null;
     this.reconfiguredAt = new Date().toISOString();
-    console.log(`[zk] device link reconfigured (${reason}) → ${this.mode} @ ${config.zk.ip}:${config.zk.port}`);
+    // Lock timings are settings too; a change must apply without a restart.
+    tuneDeviceLock({ staleMs: config.zk.lock.staleMs, gapMs: config.zk.lock.gapMs });
+    console.log(
+      `[zk] device link reconfigured (${reason}) → ${this.mode} @ ${config.zk.ip}:${config.zk.port}` +
+        ` · Comm Key ${config.zk.commKey ? 'set (' + config.zk.commKey + ')' : 'not set (0)'}`
+    );
     return {
       ok: true,
       mode: this.mode,
@@ -92,28 +126,63 @@ class ZKManager {
     };
   }
 
-  /** Wrap a device operation with retry + circuit-breaker bookkeeping. */
-  async call(opName, fn, { retries = config.retry.attempts } = {}) {
+  /**
+   * Wrap a device operation with the session lock + retry + circuit-breaker
+   * bookkeeping.
+   *
+   * The lock is taken OUTSIDE the retry loop: a retried connect keeps owning
+   * the terminal instead of releasing it and racing the next poller tick into
+   * the gap.
+   *
+   * @param {string} opName
+   * @param {(device:object, opts:{ticket:object}) => Promise<any>} fn
+   * @param {{retries?:number, lockTimeoutMs?:number, origin?:string, ticket?:object}} [opts]
+   */
+  async call(opName, fn, { retries = config.retry.attempts, lockTimeoutMs, origin = 'manager', ticket = null } = {}) {
     this.assertCircuit();
 
-    let attempt = 0;
-    let lastErr = null;
-    while (attempt < retries) {
-      attempt++;
-      try {
-        const result = await fn(this.device);
-        this.onSuccess();
-        return result;
-      } catch (err) {
-        lastErr = err;
-        if (!(err instanceof ZKConnectionError) || attempt >= retries) break;
-        const delay = config.retry.baseDelayMs * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
-        console.warn(`[zk] ${opName} failed (attempt ${attempt}/${retries}): ${err.message} — retrying in ${delay}ms`);
-        await sleep(delay);
+    const attemptLoop = async (heldTicket) => {
+      let attempt = 0;
+      let lastErr = null;
+      while (attempt < retries) {
+        attempt++;
+        try {
+          const result = await fn(this.device, { ticket: heldTicket, origin });
+          this.onSuccess();
+          return result;
+        } catch (err) {
+          lastErr = err;
+          // "Terminal busy" is our own lock talking — retrying would only
+          // queue behind ourselves.
+          if (isBusyError(err) || !(err instanceof ZKConnectionError) || attempt >= retries) break;
+          const delay = config.retry.baseDelayMs * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
+          console.warn(`[zk] ${opName} failed (attempt ${attempt}/${retries}): ${err.message} — retrying in ${delay}ms`);
+          await sleep(delay);
+        }
       }
-    }
-    this.onFailure(opName, lastErr);
-    throw lastErr;
+      this.onFailure(opName, lastErr);
+      throw lastErr;
+    };
+
+    // Already inside a locked batch (push-all, comm-key change): reuse it.
+    if (ticket && this.lock.owns(ticket)) return attemptLoop(ticket);
+
+    return this.lock.runExclusive(opName, attemptLoop, {
+      timeoutMs: lockTimeoutMs != null ? lockTimeoutMs : config.zk.lock.waitMs,
+      origin,
+    });
+  }
+
+  /**
+   * Run a MULTI-STEP device workflow as one exclusive session: nobody else can
+   * reach the terminal between the steps. Used by "push all teachers" and by
+   * the Comm Key change (read → write → verify → roll back on failure).
+   */
+  async withLock(label, fn, { timeoutMs, origin = 'manager' } = {}) {
+    return this.lock.runExclusive(label, fn, {
+      timeoutMs: timeoutMs != null ? timeoutMs : config.zk.lock.waitMs,
+      origin,
+    });
   }
 
   assertCircuit() {
@@ -133,9 +202,17 @@ class ZKManager {
   }
 
   onFailure(opName, err) {
+    // A device that ATT is already using is not a failing device.
+    if (isBusyError(err)) return;
     const retryable = err instanceof ZKConnectionError;
     this.consecutiveFailures = retryable ? this.consecutiveFailures + 1 : this.consecutiveFailures;
-    this.lastError = { op: opName, message: err.message, at: new Date().toISOString() };
+    this.lastError = {
+      op: opName,
+      message: err.message,
+      hint: err.hint || null,
+      fault: err.fault || null,
+      at: new Date().toISOString(),
+    };
     if (retryable && this.consecutiveFailures >= config.retry.breakerThreshold && this.circuit !== 'open') {
       this.circuit = 'open';
       this.openedAt = Date.now();
@@ -148,38 +225,58 @@ class ZKManager {
     }
   }
 
-  async testConnection() {
+  async testConnection(opts = {}) {
     try {
       const res = await this.call(
         'testConnection',
-        async (d) => {
-          const result = await d.testConnection();
+        async (d, callOpts) => {
+          const result = await d.testConnection(callOpts);
           if (result && result.ok === false && result.retryable) {
             throw new ZKConnectionError(result.error);
           }
           return result;
         },
-        { retries: 2 }
+        { retries: 2, ...opts }
       );
       return res;
     } catch (err) {
       return {
         ok: false, mode: this.mode, ip: config.zk.ip, port: config.zk.port,
-        error: err.message, circuit: this.circuit,
+        error: err.message, hint: err.hint || null, busy: isBusyError(err),
+        circuit: this.circuit,
       };
     }
   }
 
-  async getUsers() {
-    return this.call('getUsers', (d) => d.getUsers());
+  async getUsers(opts = {}) {
+    return this.call('getUsers', (d, callOpts) => d.getUsers(callOpts), opts);
   }
 
-  async getAttendance() {
-    return this.call('getAttendance', (d) => d.getAttendance());
+  async getAttendance(opts = {}) {
+    return this.call('getAttendance', (d, callOpts) => d.getAttendance(callOpts), opts);
   }
 
-  async setUser(payload) {
-    return this.call(`setUser(${payload.userId})`, (d) => d.setUser(payload));
+  async setUser(payload, opts = {}) {
+    return this.call(`setUser(${payload.userId})`, (d, callOpts) => d.setUser(payload, callOpts), opts);
+  }
+
+  /** What ATT knows about the terminal's Comm Key, and whether it matches. */
+  commKeyStatus() {
+    // Where the value came from, for the UI: the settings file (what the app
+    // writes), an environment variable the operator owns, or the 0 default.
+    let source = 'default';
+    try {
+      const stored = settings.readRaw();
+      if (stored && stored.device && stored.device.commKey !== undefined) source = 'settings-file';
+      else if (process.env.ZK_COMM_KEY !== undefined) source = 'environment';
+    } catch (_) { /* status must never throw */ }
+    return {
+      configured: config.zk.commKey,
+      set: config.zk.commKey !== 0,
+      source,
+      editable: typeof this.device.readCommKey === 'function',
+      mode: this.mode,
+    };
   }
 
   /**
@@ -209,6 +306,12 @@ class ZKManager {
       nextProbeAt: this.circuit === 'open' ? new Date(this.nextAttemptAt).toISOString() : null,
       pollIntervalMinutes: config.poll.intervalMinutes,
       pollerBusy: this.busy,
+      // One session at a time: who holds the terminal, who is waiting, and how
+      // often ATT had to refuse a second operation.
+      busy: this.isBusy(),
+      busyReason: this.isBusy() ? this.busyReason() : null,
+      deviceLock: this.lock.status(),
+      commKey: this.commKeyStatus(),
       reconfiguredAt: this.reconfiguredAt,
       bridge: this.mode === 'bridge' ? getAgentStatus() : null,
       capabilities: this.capabilities(),
@@ -236,8 +339,25 @@ function getManager() {
  * used by the Connect wizard ("test before you save") and by LAN discovery to
  * confirm that an open :4370 host really is a ZKTeco device.
  */
-async function probeDevice({ ip, port = config.zk.port, timeoutMs = 4000, inPort = config.zk.inPort } = {}) {
-  const device = new RealZKDevice({ ip, port, timeoutMs, inPort });
+async function probeDevice({
+  ip,
+  port = config.zk.port,
+  timeoutMs = 4000,
+  inPort = config.zk.inPort,
+  // Probing another terminal must not queue behind the live one: a LAN sweep
+  // identifies dozens of hosts and would otherwise stall the poller.
+  lockTimeoutMs = 0,
+  commKey = config.zk.commKey,
+} = {}) {
+  const device = new RealZKDevice({
+    ip,
+    port,
+    timeoutMs,
+    inPort,
+    commKey,
+    lockWaitMs: lockTimeoutMs,
+    origin: 'probe',
+  });
   const started = Date.now();
   try {
     const result = await device.testConnection();
@@ -250,4 +370,4 @@ async function probeDevice({ ip, port = config.zk.port, timeoutMs = 4000, inPort
   }
 }
 
-module.exports = { initManager, getManager, ZKManager, ZKDeviceError, probeDevice };
+module.exports = { initManager, getManager, ZKManager, ZKDeviceError, probeDevice, normalizeCommKey };

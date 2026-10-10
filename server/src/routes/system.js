@@ -152,7 +152,8 @@ router.post('/device/probe', async (req, res) => {
   const port = Number(req.body?.port || config.zk.port);
   const timeoutMs = Math.min(20000, Math.max(1000, Number(req.body?.timeoutMs || 5000)));
   const result = await probeDevice({ ip, port, timeoutMs });
-  res.status(result.ok ? 200 : 502).json({ data: result });
+  // 409 (not 502) when the terminal is ours already: nothing is wrong with it.
+  res.status(result.ok ? 200 : result.busy ? 409 : 502).json({ data: result });
 });
 
 /** Full checklist: interfaces → subnet → ping → TCP → ZK handshake. */

@@ -12,12 +12,34 @@ process.env.ATT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'att-system-'));
 process.env.ZK_MODE = 'mock';
 delete process.env.ZK_IP;
 delete process.env.APP_PASSWORD;
+// This file asserts route behaviour, not session timing: without it the 350ms
+// inter-session cool-down would make the next request "device busy" depending
+// on how fast the previous test happened to run. The busy path has its own test.
+process.env.ZK_SESSION_GAP_MS = '0';
 
 const { bootServer } = require('../src/bootstrap');
 
 let handle = null;
 let base = '';
 const json = (r) => r.json();
+
+/**
+ * Wait until no ATT operation owns the terminal. Restarting the poller (see the
+ * settings test) fires an immediate sync, and in mock mode that lands a few
+ * milliseconds later — right in the middle of whatever runs next. Device
+ * assertions must not depend on that race.
+ */
+async function settleDevice(timeoutMs = 5000) {
+  const { getDeviceLock } = require('../src/zk/deviceLock');
+  const lock = getDeviceLock();
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const st = lock.status();
+    if (!st.locked && st.cooldownRemainingMs <= 0) return st;
+    if (Date.now() > deadline) throw new Error(`device still busy: ${JSON.stringify(st.owner || st.waiting)}`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
 
 test.before(async () => {
   handle = await bootServer({ port: 0, poll: false, mode: 'test' });
@@ -84,6 +106,7 @@ test('PUT /api/system/settings validates (422) and never half-writes', async () 
 });
 
 test('POST /api/system/device/probe handshakes without saving anything', async () => {
+  await settleDevice();
   const res = await fetch(`${base}/api/system/device/probe`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -97,6 +120,51 @@ test('POST /api/system/device/probe handshakes without saving anything', async (
   // probe must not have touched the configured link
   const status = await json(await fetch(`${base}/api/device/status`));
   assert.equal(status.data.target.ip, '192.168.50.10');
+});
+
+test('POST /api/system/device/probe answers 409 while another operation owns the terminal', async () => {
+  // The wizard must learn "ATT is using the device right now" — not a 502 that
+  // reads as a broken terminal.
+  await settleDevice();
+  const { getDeviceLock } = require('../src/zk/deviceLock');
+  const lock = getDeviceLock();
+  const ticket = await lock.acquire('poller:getAttendance', { origin: 'poller:poll' });
+  try {
+    const res = await fetch(`${base}/api/system/device/probe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ip: '127.0.0.1', port: 1, timeoutMs: 1500 }),
+    });
+    assert.equal(res.status, 409);
+    const { data } = await json(res);
+    assert.equal(data.busy, true);
+    assert.match(data.error, /terminal is busy/);
+    assert.match(data.error, /poller:getAttendance/, 'the message names the operation holding the device');
+  } finally {
+    lock.release(ticket);
+  }
+});
+
+test('POST /api/system/diagnostics skips the handshake (not fails it) while the terminal is busy', async () => {
+  await settleDevice();
+  const { getDeviceLock } = require('../src/zk/deviceLock');
+  const lock = getDeviceLock();
+  const ticket = await lock.acquire('device:fetch-logs', { origin: 'route:device' });
+  try {
+    const res = await fetch(`${base}/api/system/diagnostics`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // A loopback target so the TCP steps pass and only the handshake can differ.
+      body: JSON.stringify({ ip: '127.0.0.1', port: 1, ping: false, timeoutMs: 1200 }),
+    });
+    assert.equal(res.status, 200);
+    const { data } = await json(res);
+    const handshake = data.steps.find((s) => s.id === 'handshake');
+    assert.ok(handshake, 'the handshake step is always reported');
+    assert.notEqual(handshake.status, 'fail', 'a busy terminal is not a failed handshake');
+  } finally {
+    lock.release(ticket);
+  }
 });
 
 test('POST /api/system/diagnostics returns the ordered checklist', async () => {

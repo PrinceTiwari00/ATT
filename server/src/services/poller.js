@@ -17,19 +17,39 @@ const { getDb, tx } = require('../db/connection');
 const { getManager } = require('../zk/manager');
 const { recomputeDate, adoptOrphanPunches } = require('./processor');
 const { todayStr } = require('../zk/deviceContract');
+const { isBusyError } = require('../zk/deviceLock');
 
 let timer = null;
 
+/** "Not now" answers — a skipped sync is normal, not a failure. */
+function skipped(trigger, reason, extra = {}) {
+  return { ok: false, skipped: true, busy: true, trigger, reason, at: new Date().toISOString(), ...extra };
+}
+
+/**
+ * Pull the device log once.
+ *
+ * Two guards, because the terminal serves ONE session:
+ *   • `manager.busy`  — another SYNC is already running (poller re-entrancy).
+ *   • `manager.isBusy()` — anything else owns the device right now (a manual
+ *     test, a device-user fetch, a push-all, a Comm Key change, a LAN probe).
+ * Either way this tick is skipped and the next one tries again; the poller
+ * never queues behind a long operation and never opens a second socket.
+ */
 async function syncOnce(trigger = 'poll') {
   const manager = getManager();
   if (manager.busy) {
-    return { ok: false, skipped: true, reason: 'sync already in progress' };
+    return skipped(trigger, 'sync already in progress');
+  }
+  if (manager.isBusy()) {
+    const lock = manager.lock.status();
+    return skipped(trigger, `terminal is busy — ${manager.busyReason()}`, { owner: lock.owner });
   }
   manager.busy = true;
   const started = Date.now();
 
   try {
-    const records = await manager.getAttendance();
+    const records = await manager.getAttendance({ origin: `poller:${trigger}` });
     const db = getDb();
 
     const teacherByZk = new Map(
@@ -99,10 +119,21 @@ async function syncOnce(trigger = 'poll') {
     manager.lastSyncResult = result;
     return result;
   } catch (err) {
+    // Somebody claimed the terminal between the check above and the acquire
+    // (a manual sync, the wizard, a Comm Key change). Report it as a skip, not
+    // as a device fault — and never let it feed the circuit breaker.
+    if (isBusyError(err)) {
+      const result = skipped(trigger, err.message, { durationMs: Date.now() - started });
+      manager.lastSyncAt = result.at;
+      manager.lastSyncResult = result;
+      console.warn(`[poller] ${trigger} skipped — ${err.message}`);
+      return result;
+    }
     const result = {
       ok: false,
       trigger,
       error: err.message,
+      hint: err.hint || null,
       durationMs: Date.now() - started,
       at: new Date().toISOString(),
     };

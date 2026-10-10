@@ -147,15 +147,29 @@ For Windows, create a Task Scheduler task **At startup** that runs
    in ATT and choose **Push all teachers → device**.
 
 Punches are read non-destructively and de-duplicated in the database. Keep the
-terminal's clock accurate and Comm Key set to `0` for the tested K14; see
-[HARDWARE_SETUP.md](HARDWARE_SETUP.md) for device configuration.
+terminal's clock accurate, and make sure the **Comm Key** matches on both
+sides — the value saved in the cloud ATT (Device & Sync → *Terminal password*,
+or `ZK_COMM_KEY` on the Render service) is sent to the LAN agent with every
+command, so the agent authenticates even without its own `.env` entry. A
+non-zero key is recommended: it stops ZKTime and other LAN software from taking
+the terminal's single session away from a sync. See
+[HARDWARE_SETUP.md](HARDWARE_SETUP.md) §1.2.
+
+> Only **one** ATT should poll a given terminal. The device serves a single
+> management session and each ATT instance serialises its *own* access — two
+> instances that both know the key will still interrupt each other. In a
+> cloud + LAN setup, run the poller in the cloud service and let the agent
+> execute its commands (that is what bridge mode does); do not also run a
+> second, direct-mode ATT against the same device.
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
 | School LAN agent is offline | Agent process is running; `ATT_API_URL` is the HTTPS Render URL; the exact same `DEVICE_BRIDGE_TOKEN` is set on Render and the agent; Render service is awake/healthy. |
-| Agent online, Test link fails | From the agent host, test `ZK_IP:ZK_PORT`; check static device IP, VLAN/client isolation, Comm Key `0`, and that ZKTime/another client is disconnected. |
+| Agent online, Test link fails | From the agent host, test `ZK_IP:ZK_PORT`; check static device IP, VLAN/client isolation, that the Comm Key matches the device (`Menu → COMM → Comm Key`), and that ZKTime/another client is disconnected. |
+| `TIMEOUT_ON_WRITING_MESSAGE`, or *"the terminal REJECTED Comm Key N"* | The key ATT uses is not the key on the device. Read it on the keypad and save it with **“ATT only”** in Device & Sync → Terminal password, or write a new key from there (ATT verifies and rolls back on failure). |
+| HTTP 409 / *"the terminal is busy"* | Another ATT operation holds the device session — by design. Wait a few seconds; the poller treats it as a skipped cycle, not an error. |
 | Attendance is empty | Click **Fetch logs now**; confirm punches exist in terminal memory and that its clock is correct. |
 | Enrollment push fails | Check the ZKTeco firmware's user-ID constraints; some models require fingerprint capture on the keypad after ATT creates the user ID. |
 | Agent reports unauthorized | Rotate/fix the token in Render and the local agent, then restart the agent. Do not share it with staff browsers. |

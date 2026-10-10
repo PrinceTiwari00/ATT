@@ -78,7 +78,9 @@ three steps, each with its own verification:
 3. **Verify, then connect** —
    - **Diagnostics** runs the full checklist: local interface → subnet relation →
      ICMP → TCP 4370 → ZKTeco handshake. Every failed step lists the exact fix
-     (Comm Key ≠ 0, AP client isolation, missing route, stolen session…).
+     (Comm Key mismatch, AP client isolation, missing route, stolen session…).
+     Diagnostics never opens a second session while a sync is running — it
+     reports the terminal as busy instead.
    - **Test handshake** confirms the protocol answers before anything is saved.
    - **Save & connect** persists the settings, re-points the poller *live* (no
      restart), and pulls the first batch of punches immediately.
