@@ -56,11 +56,41 @@ const ZK_METHODS = {
   writeUser: ['setUser', 'createUser'],
 };
 
+let zkLibGuardInstalled = false;
+
+/**
+ * node-zklib 1.3.0 bug: when a request fails (timeout, reset, a device that
+ * went quiet), readWithBuffer() rejects its promise correctly and then carries
+ * on with a null reply, throwing a TypeError from inside an async executor.
+ * Nothing awaits that promise, so Node reports it as an unhandled rejection —
+ * and by default that exits the whole process. The caller already has the real
+ * error, so we ignore exactly this stray error (it comes from node-zklib's own
+ * file) and keep Node's default behaviour for everything else.
+ */
+function guardZkLibStrayRejections() {
+  if (zkLibGuardInstalled) return;
+  zkLibGuardInstalled = true;
+  process.on('unhandledRejection', (reason) => {
+    const fromZkLib =
+      reason instanceof TypeError &&
+      /node-zklib[\\/]zklibtcp\.js/.test(String(reason.stack || ''));
+    if (fromZkLib) {
+      console.warn(`[zk] ignored node-zklib internal error after a failed request: ${reason.message}`);
+      return;
+    }
+    setImmediate(() => {
+      throw reason; // same outcome as Node's default: fail loudly
+    });
+  });
+}
+
 function loadZkLib() {
   try {
     // node-zklib: CommonJS default export is a constructor.
     // Signature: new ZKLib(ip, port, timeout_ms, inport)
-    return require('node-zklib');
+    const lib = require('node-zklib');
+    guardZkLibStrayRejections();
+    return lib;
   } catch (err) {
     throw new ZKDeviceError(
       "node-zklib is not installed. Run `npm --prefix server install` or use ZK_MODE=mock.",
@@ -277,6 +307,8 @@ class RealZKDevice {
     this.explicitHandshake = cfg.explicitHandshake !== false;
     /** How long to wait for the device when another ATT operation holds it. */
     this.lockWaitMs = cfg.lockWaitMs != null ? Math.max(0, Number(cfg.lockWaitMs) || 0) : 0;
+    /** After a timeout, how long to wait for the broken operation to actually end. */
+    this.settleMs = cfg.settleMs != null ? Math.max(0, Number(cfg.settleMs) || 0) : 5000;
     this.origin = cfg.origin || null;
     // An explicit DeviceLock (tests, a second terminal); otherwise the shared
     // process-wide one. NOTE the name: `cfg.lock` is the *timing* object in
@@ -315,22 +347,50 @@ class RealZKDevice {
     );
   }
 
-  /** The locked body of withConnection: one socket, one operation, always closed. */
+  /**
+   * The locked body of withConnection: one socket, one operation, always closed.
+   *
+   * The lock is held until the operation has REALLY ended. `withTimeout` only
+   * stops waiting for it: the operation keeps running, so if we released the
+   * terminal at that point the next session would connect while this one was
+   * still open on the device — the terminal then drops one of them. So when an
+   * operation is still in flight at this point, we break its socket (its own
+   * pending read then fails), wait for it to end, and only then let go.
+   */
   async runSession(op, label, _ticket) {
     const ZKLib = loadZkLib();
     const zk = new ZKLib(this.ip, this.port, this.timeoutMs, this.inPort);
+    let work = null;
+    let workDone = false;
     try {
       const session = await this.openSession(zk);
-      return await withTimeout(
-        Promise.resolve().then(() => op(zk, session)),
-        this.timeoutMs,
-        `${label} ${this.ip}:${this.port}`
+      work = Promise.resolve().then(() => op(zk, session));
+      work.then(
+        () => { workDone = true; },
+        () => { workDone = true; }
       );
+      return await withTimeout(work, this.timeoutMs, `${label} ${this.ip}:${this.port}`);
     } catch (err) {
       if (err instanceof ZKConnectionError || err instanceof ZKDeviceError || isBusyError(err)) throw err;
       throw classifyNetworkError(err, this.ip, this.port);
     } finally {
-      await safeDisconnect(zk); // never leak a session on the terminal
+      if (work && !workDone) {
+        // Still running (timeout or failure). Break its socket, then wait for it.
+        breakTransports(zk);
+        const ended = await settledWithin(work, this.settleMs);
+        if (!ended) {
+          console.warn(
+            `[zk] ${label} did not end within ${this.settleMs}ms after its socket was closed; ` +
+              'releasing the terminal anyway — the next session may be refused until the device drops the old one.'
+          );
+        }
+        // The socket is already dead: skip the EXIT handshake (it would wait on a
+        // reply that cannot come) and just finish the teardown.
+        destroyTransport(zk && zk.zklibTcp, 'tcp');
+        destroyTransport(zk && zk.zklibUdp, 'udp');
+      } else {
+        await safeDisconnect(zk); // never leak a session on the terminal
+      }
     }
   }
 
@@ -602,6 +662,33 @@ async function safeDisconnect(zk) {
   }
   destroyTransport(zk && zk.zklibTcp, 'tcp');
   destroyTransport(zk && zk.zklibUdp, 'udp');
+}
+
+/**
+ * Close the sockets under an operation that is still running, WITHOUT removing
+ * listeners: the operation's own pending I/O must see the close and finish.
+ */
+function breakTransports(zk) {
+  for (const transport of [zk && zk.zklibTcp, zk && zk.zklibUdp]) {
+    const socket = transport && transport.socket;
+    if (socket && typeof socket.destroy === 'function') {
+      try {
+        socket.destroy();
+      } catch (_) {
+        /* already closed */
+      }
+    }
+  }
+}
+
+/** Resolve true if `promise` settles within `ms`, false if it is still running. Never rejects. */
+function settledWithin(promise, ms) {
+  let timer = null;
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  const done = promise.then(() => true, () => true);
+  return Promise.race([done, bound]).finally(() => clearTimeout(timer));
 }
 
 /** Force one node-zklib transport closed, whatever state it is in. */

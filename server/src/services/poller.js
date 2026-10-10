@@ -38,18 +38,29 @@ function skipped(trigger, reason, extra = {}) {
  */
 async function syncOnce(trigger = 'poll') {
   const manager = getManager();
-  if (manager.busy) {
-    return skipped(trigger, 'sync already in progress');
-  }
-  if (manager.isBusy()) {
-    const lock = manager.lock.status();
-    return skipped(trigger, `terminal is busy — ${manager.busyReason()}`, { owner: lock.owner });
+  // A person pressing "Fetch logs now" WAITS for the terminal (up to
+  // ZK_LOCK_WAIT_MS) — it is never refused. The background poll never waits:
+  // if the terminal is busy, or a person is already waiting for it, it skips
+  // this tick and tries again next minute.
+  const background = trigger !== 'manual';
+  if (background) {
+    if (manager.busy) {
+      return skipped(trigger, 'sync already in progress');
+    }
+    if (manager.isBusy() || manager.lock.waitingCount > 0) {
+      const lock = manager.lock.status();
+      return skipped(trigger, `terminal is busy — ${manager.busyReason()}`, { owner: lock.owner });
+    }
   }
   manager.busy = true;
   const started = Date.now();
 
   try {
-    const records = await manager.getAttendance({ origin: `poller:${trigger}` });
+    const records = await manager.getAttendance({
+      origin: background ? `poller:${trigger}` : 'manual',
+      // undefined → the manager's wait budget (ZK_LOCK_WAIT_MS); 0 for the poll
+      lockTimeoutMs: background ? 0 : undefined,
+    });
     const db = getDb();
 
     const teacherByZk = new Map(

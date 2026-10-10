@@ -97,10 +97,11 @@ const config = {
     explicitHandshake: process.env.ZK_EXPLICIT_HANDSHAKE !== 'false',
     /* One session at a time — see zk/deviceLock.js. */
     lock: {
-      // 0 (default) = refuse a second device operation immediately with a
-      // clear "terminal is busy" 409 instead of letting requests pile up.
-      // >0 = wait that long for the running operation to finish first.
-      waitMs: Math.max(0, parseInt(process.env.ZK_LOCK_WAIT_MS || '0', 10) || 0),
+      // How long a person's device action (Fetch logs now, Test link, Check key…)
+      // waits for the terminal to free up before a clear "terminal is busy" 409
+      // is returned. The background poll never waits: it skips that tick.
+      // 0 = refuse immediately (the old behaviour).
+      waitMs: Math.max(0, parseInt(process.env.ZK_LOCK_WAIT_MS || '15000', 10) || 0),
       // Force-release the lock if an operation outlives this (a wedged socket
       // must never disable device access for good).
       staleMs: Math.max(5000, parseInt(process.env.ZK_LOCK_STALE_MS || '120000', 10) || 120000),

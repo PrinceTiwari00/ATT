@@ -278,6 +278,6 @@ test('the configured lock timings come from config.zk.lock', () => {
   const lock = getDeviceLock();
   assert.equal(lock.staleMs, config.zk.lock.staleMs);
   assert.equal(lock.gapMs, config.zk.lock.gapMs);
-  assert.equal(config.zk.lock.waitMs, 0, 'default policy: refuse a second operation immediately');
+  assert.equal(config.zk.lock.waitMs, 15000, 'default policy: a person waits up to 15 s for the terminal');
   resetDeviceLock(null);
 });

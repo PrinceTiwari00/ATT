@@ -181,8 +181,14 @@ raw ledger within seconds. The background poller keeps pulling every
 > Tuning (env, rarely needed): `ZK_SESSION_GAP_MS` (default `350` — pause
 > between sessions so the device can release the socket),
 > `ZK_LOCK_STALE_MS` (default `120000` — a wedged session is force-released
-> after this), `ZK_LOCK_WAIT_MS` (default `0` = refuse immediately; `>0` makes
-> callers queue instead).
+> after this), `ZK_LOCK_WAIT_MS` (default `15000` — a person's device button
+> queues for up to 15 s while a log download finishes, then gets a clear
+> "terminal is busy" message; `0` = refuse immediately). The background poll never
+> queues: if the terminal is busy it skips that minute and tries again.
+>
+> A log download that runs past `ZK_TIMEOUT_MS` is stopped cleanly: its socket is
+> closed and ATT waits for it to end before the next session opens. Large
+> attendance memories may need a bigger `ZK_TIMEOUT_MS` (for example `60000`).
 
 ---
 

@@ -241,7 +241,11 @@ class ZKManager {
   }
 
   async getAttendance(opts = {}) {
-    return this.call('getAttendance', (d, callOpts) => d.getAttendance(callOpts), opts);
+    // One attempt only: a log download is the slowest thing ATT does, and every
+    // retry would hold the terminal for another full timeout while the person
+    // waiting on it is refused. A failed download is simply tried again on the
+    // next poll or the next click.
+    return this.call('getAttendance', (d, callOpts) => d.getAttendance(callOpts), { retries: 1, ...opts });
   }
 
   async setUser(payload, opts = {}) {

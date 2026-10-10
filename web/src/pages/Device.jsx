@@ -168,8 +168,8 @@ export default function Device() {
             <div className="flex items-start gap-2 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-[12px] leading-snug text-indigo-800">
               <Lock size={14} className="mt-0.5 shrink-0" />
               <span>
-                <b>Terminal in use — {status?.busyReason}</b>. Device buttons are refused (not queued)
-                until it finishes, so ATT never opens a second session and knocks itself off the terminal.
+                <b>Terminal in use — {status?.busyReason}</b>. Your device buttons queue and run as soon as it
+                is free (ATT waits up to 15 s), so ATT never opens a second session and knocks itself off the terminal.
                 {status?.deviceLock?.waiting?.length > 0 && (
                   <> {status.deviceLock.waiting.length} request(s) waiting.</>
                 )}
@@ -223,21 +223,24 @@ export default function Device() {
           )}
 
           <div className="grid grid-cols-2 gap-2 pt-1">
+            {/* Not disabled while the terminal is busy: the press queues and runs
+                as soon as the current download finishes (see ZK_LOCK_WAIT_MS). */}
             <button
               className="btn-ghost"
               onClick={runTest}
-              disabled={testing || (busy && !testing)}
-              title={busy ? 'The terminal is busy with another ATT operation — only one session at a time' : undefined}
+              disabled={testing}
+              title={busy ? `Queued — runs when the terminal is free (${status?.busyReason})` : undefined}
             >
-              <Zap size={15} className={testing ? 'animate-pulse' : ''} /> Test link
+              <Zap size={15} className={testing ? 'animate-pulse' : ''} /> {testing ? 'Testing…' : busy ? 'Test link (queued)' : 'Test link'}
             </button>
             <button
               className="btn-primary"
               onClick={runSync}
-              disabled={syncing || (busy && !syncing)}
-              title={busy ? 'The terminal is busy with another ATT operation — only one session at a time' : undefined}
+              disabled={syncing}
+              title={busy ? `Queued — runs when the terminal is free (${status?.busyReason})` : undefined}
             >
-              <CloudDownload size={15} className={syncing ? 'animate-bounce' : ''} /> {syncing ? 'Syncing…' : busy ? 'Terminal busy…' : 'Fetch logs now'}
+              <CloudDownload size={15} className={syncing ? 'animate-bounce' : ''} />{' '}
+              {syncing ? (busy ? 'Waiting for terminal…' : 'Syncing…') : busy ? 'Fetch logs now (queued)' : 'Fetch logs now'}
             </button>
           </div>
           <Link to="/connect?diagnose=1" className="btn-ghost mt-2 w-full">
@@ -453,8 +456,8 @@ function CommKeyCard({ state, busy, checking, onChange, onCheck }) {
           </div>
         </div>
         <div className="flex gap-2">
-          <button className="btn-ghost !py-1.5 !text-xs" onClick={onCheck} disabled={checking || busy}
-            title={busy ? 'The terminal is busy with another ATT operation' : 'Ask the terminal what key it has (one session)'}>
+          <button className="btn-ghost !py-1.5 !text-xs" onClick={onCheck} disabled={checking}
+            title={busy ? 'Queued — runs when the terminal is free' : 'Ask the terminal what key it has (one session)'}>
             <RefreshCw size={13} className={checking ? 'animate-spin' : ''} /> {checking ? 'Asking…' : 'Check against terminal'}
           </button>
           <button className="btn-primary !py-1.5 !text-xs" onClick={onChange}
