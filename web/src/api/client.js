@@ -89,6 +89,16 @@ export const api = {
   deviceStatus: () => request(`/device/status`),
   deviceTest: () => request(`/device/test`, { method: 'POST' }),
   syncNow: () => request(`/device/sync-now`, { method: 'POST' }),
+  // Reading ATT's configured key is a settings-only operation by default: a
+  // page load must not open a session on the terminal. Pass { device: true }
+  // only for an explicit user request to compare the terminal's current key.
+  commKey: ({ device = false } = {}) =>
+    request(`/device/comm-key?device=${device ? 'true' : 'false'}`),
+  setCommKey: (key, writeToDevice = true) =>
+    request(`/device/comm-key`, {
+      method: 'POST',
+      body: JSON.stringify({ key, writeToDevice }),
+    }),
   deviceUsers: () => request(`/device/users`),
   importDeviceUsers: (users, extra = {}) =>
     request(`/device/users/import`, { method: 'POST', body: JSON.stringify({ users, ...extra }) }),
