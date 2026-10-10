@@ -99,10 +99,7 @@ async function syncOnce(trigger = 'poll') {
     for (const day of adopted.dates) affectedDates.add(day);
 
     if (config.poll.alwaysReprocessToday) affectedDates.add(todayStr());
-    let processedTeachers = 0;
-    for (const dateStr of affectedDates) {
-      processedTeachers = recomputeDate(dateStr);
-    }
+    for (const dateStr of affectedDates) recomputeDate(dateStr);
 
     const result = {
       ok: true,

@@ -14,6 +14,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+// This file checks library method compatibility, not the session cool-down policy.
+process.env.ZK_SESSION_GAP_MS = '0';
+
 const {
   RealZKDevice,
   ZK_METHODS,
