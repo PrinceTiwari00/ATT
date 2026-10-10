@@ -7,7 +7,8 @@
 
 > **✅ This site's device (verified 2026-09-30):** ZKTeco **K14** @
 > **`192.168.1.110:4370`** · firmware 4.0.1 (build 74) · ZKFinger VX10.0 ·
-> SN `ONP6080486080200092` · DHCP **Off** · Comm Key (Password) **= 0**.
+> SN `ONP6080486080200092` · DHCP **Off** · Comm Key (Password) **= 0** as
+> delivered — see §1.2 for why setting one is now recommended.
 > Configuration screens below show the verified device values. In direct
 > mode the server needs a route to `192.168.1.0/24`; for Render/cloud mode run
 > the bridge agent on a school-LAN machine that has that route.
@@ -72,14 +73,44 @@ Menu labels vary slightly by firmware — the setting names are the constants.
 | Gateway | `192.168.1.1` | your router |
 | DHCP | **OFF** | a static IP that survives reboots is essential |
 
-### 1.2 Set **Comm Key = 0**
+### 1.2 Set the **Comm Key** (the terminal's connection password)
 `Menu → COMM → Comm Key` (some firmware: `Cloud/Security → Comm Key` or
 `Connection → PC Connection → Comm Key`).
 
-A non-zero comm key makes the device accept TCP connections and then
-**reject every protocol command** — the classic symptom of
-“connects but returns nothing”. Keep it `0` (LAN-trusted) and see §6 for
-securing the network side instead.
+The Comm Key is the password a program must present after connecting. The
+terminal serves **one management session**, so this setting decides what
+happens when something *else* on the LAN tries to talk to it:
+
+| Comm Key | Effect |
+|---|---|
+| `0` (factory) | The terminal answers **any** program: ZKTime, a vendor demo tool, a second ATT install. Whoever connects second kills the first session — `ECONNRESET` / *“Another device is connecting to the device so the connection is interrupted”*. |
+| non-zero (e.g. `1`) | Every client that does not know the key is **refused at the handshake** and cannot take the session away from ATT. |
+
+**Recommended for a school:** set a short key (`1`–`999999`, keep it typeable
+on the keypad in case you ever need to recover the device) and save the same
+value in ATT.
+
+ATT supports a non-zero key natively — it performs the `CMD_CONNECT` →
+`CMD_AUTH` handshake itself — and can change it for you:
+**Device & Sync → Terminal password (Comm Key) → Set a key**. That flow reads
+the current key from the device, writes the new one, then **logs in again to
+verify**, and rolls the device back if verification fails, so it cannot lock
+you out. “Check against terminal” compares the two sides without changing
+anything.
+
+> ⚠️ **Write the key down.** If ATT's copy and the device's copy disagree,
+> every command is refused with `TIMEOUT_ON_WRITING_MESSAGE` or
+> *“the terminal REJECTED Comm Key N”*. Recovery is on the keypad:
+> `Menu → COMM → Comm Key` → set it to `0` (or to the number ATT has), then
+> **Device & Sync → Check against terminal**.
+>
+> If the key was typed on the keypad and ATT does not know it yet, use
+> **“ATT only”** in the same dialog — it saves the key without touching the
+> device.
+
+Changing the key does not affect anything already stored on the terminal, and
+punches keep flowing. Reboot the device once after the change so any client
+still holding a session under the old key is dropped.
 
 ### 1.3 Confirm the **TCP/IP port**
 `Menu → COMM → Connection` — default **4370**. If you change it, set
@@ -131,10 +162,27 @@ raw ledger within seconds. The background poller keeps pulling every
 `POLL_INTERVAL_MINUTES` automatically; re-polls can never duplicate a punch
 (database-enforced uniqueness).
 
-> ⚠️ ZKTeco terminals allow very few concurrent management connections
-> (often just one). **Close ZKTime/Attendance Management software** (and any
-> other instance of this app) while ATT polls, or one side will win and the
-> other will see timeouts.
+> ⚠️ **One session at a time.** A ZKTeco terminal serves a single management
+> connection. ATT enforces this on itself: every path to the hardware (poller,
+> *Fetch logs now*, *Test link*, LAN discovery, teacher push, the bridge agent)
+> goes through one process-wide **device session lock**, so ATT can never
+> collide with itself. A second caller is refused instantly with
+> `DEVICE_BUSY` / HTTP 409 *“the terminal is busy”* — that is protection
+> working, not a failure — and the poller records it as a *skipped* cycle
+> rather than a device error, so the circuit breaker is never tripped by it.
+>
+> The lock cannot see **other programs**. Close ZKTime / ZKAccess / vendor demo
+> tools, and run only **one** ATT instance against a given terminal (if a cloud
+> ATT and a local ATT both poll the same device, one of them must be switched
+> to bridge mode). To lock other software out permanently, set a Comm Key
+> (§1.2) — they will be refused at the handshake instead of stealing the
+> session mid-sync.
+>
+> Tuning (env, rarely needed): `ZK_SESSION_GAP_MS` (default `350` — pause
+> between sessions so the device can release the socket),
+> `ZK_LOCK_STALE_MS` (default `120000` — a wedged session is force-released
+> after this), `ZK_LOCK_WAIT_MS` (default `0` = refuse immediately; `>0` makes
+> callers queue instead).
 
 ---
 
@@ -166,7 +214,7 @@ enroll fingerprints on the terminal under that same User ID
 | Different subnet/VLAN | Add a route or move the server to the same VLAN |
 | Firewall / endpoint security | Allow the server or bridge host to open outbound TCP 4370 to the terminal |
 | Device was just reconfigured | **Reboot the terminal** — network changes often need it |
-| Another ZK software connected | Close it; the single session belongs to ATT |
+| Another ZK software connected | Close it; the single session belongs to ATT. Better: set a Comm Key (§1.2) so it is refused at the handshake |
 
 ---
 
@@ -175,8 +223,15 @@ enroll fingerprints on the terminal under that same User ID
 - Never expose TCP 4370 to the internet — LAN/VLAN only.
 - For a cloud-hosted ATT server, use the authenticated **LAN bridge agent**
   (§7 / [RENDER.md](RENDER.md)); do not try to route or forward port 4370.
-- The permissive Comm Key = 0 is standard for LAN pull mode; compensate with
-  network isolation (dedicated management VLAN is ideal).
+- **Set a Comm Key** (§1.2) rather than leaving the factory `0`. It is the
+  device's only authentication: with `0`, anything that can reach TCP 4370 can
+  read every punch on the terminal *and* interrupt ATT's session. A key also
+  stops other management software from stealing the single session.
+  Combine it with network isolation (a dedicated management VLAN is ideal).
+- The key is a shared secret — store it in `server/.env` (`ZK_COMM_KEY`) or in
+  ATT settings, keep it out of version control, and treat it like a password.
+  In bridge mode the cloud service sends the key with each queued command, so
+  the LAN agent authenticates even when its own `.env` has none.
 - Keep `server/data/attendance.db` backed up (it's a single file).
 
 ---
@@ -229,4 +284,5 @@ With `web/dist` present, the API serves the UI on the same port
 | “Push all teachers → device” is greyed out | The installed `node-zklib` (1.x) has no user-writing API, so ATT cannot enroll from software | That is expected: enroll on the terminal keypad, then **Fetch device users → Import** (§4A). Pulling punches is unaffected |
 | Push enrollment fails on an older build | `uid` field constraints vary by firmware | Enroll on the keypad instead, then Import (§4A) — always works |
 | Wrong late/early minutes | Device clock drift | §1.4, then *Recompute* from the Attendance API |
-| Everything was fine, now timeouts | Another management client stole the session | Close ZKTime/etc.; circuit breaker self-recovers in 1 min |
+| Everything was fine, now timeouts | Another management client stole the session | Close ZKTime/etc. and set a Comm Key (§1.2); circuit breaker self-recovers in 1 min |
+| Every ATT operation says the device is busy, forever | A wedged session was never released | The stale-holder watchdog force-releases after `ZK_LOCK_STALE_MS` (2 min). Restarting the ATT service clears it immediately; reboot the terminal if it still refuses connections |

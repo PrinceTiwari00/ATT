@@ -10,6 +10,7 @@
 const { randomUUID } = require('crypto');
 const config = require('../config');
 const { ZKConnectionError, ZKDeviceError } = require('../zk/deviceContract');
+const { normalizeCommKey } = require('../zk/commKey');
 
 const jobs = new Map();
 const queue = [];
@@ -43,7 +44,17 @@ function getAgentStatus() {
   };
 }
 
-function requestDeviceCommand(action, payload = {}) {
+/**
+ * Queue one device operation for the on-site agent.
+ *
+ * @param {string} action
+ * @param {object} [payload]
+ * @param {{commKey?:number}} [opts]  the terminal's Comm Key, sent with the
+ *   command so a key saved in the cloud UI also authenticates on the school
+ *   LAN. It travels on the same token-authenticated TLS channel as the command
+ *   itself; 0 (no key) is omitted entirely.
+ */
+function requestDeviceCommand(action, payload = {}, opts = {}) {
   if (config.zk.mode !== 'bridge') {
     return Promise.reject(new ZKDeviceError('The site device bridge is not enabled (set ZK_MODE=bridge)'));
   }
@@ -57,11 +68,15 @@ function requestDeviceCommand(action, payload = {}) {
   }
 
   const id = randomUUID();
+  const commKey = normalizeCommKey(opts.commKey != null ? opts.commKey : config.zk.commKey);
   return new Promise((resolve, reject) => {
     const job = {
       id,
       action,
       payload,
+      // Only sent when a key is actually in use — the agent falls back to its
+      // own ZK_COMM_KEY otherwise.
+      commKey: commKey || undefined,
       resolve,
       reject,
       claimedBy: null,
@@ -88,7 +103,9 @@ function claimNextCommand(agentId) {
     const job = queue.shift();
     if (!jobs.has(job.id)) continue; // expired while still queued
     job.claimedBy = id;
-    return { id: job.id, action: job.action, payload: job.payload };
+    const command = { id: job.id, action: job.action, payload: job.payload };
+    if (job.commKey) command.commKey = job.commKey;
+    return command;
   }
   return null;
 }

@@ -15,6 +15,7 @@
  */
 const {
   ZKConnectionError,
+  ZKDeviceError,
   toLocalISO,
   todayStr,
 } = require('./deviceContract');
@@ -92,6 +93,20 @@ function generateDayPunches({ userId, dateStr, shiftStart, shiftEnd, upTo = null
   return punches;
 }
 
+/* ── the simulated terminal's own Comm Key ───────────────────────────────────
+ * Module-level on purpose: it survives an adapter rebuild (which is what
+ * manager.reconfigure() does when settings change), exactly like the key stored
+ * in a real terminal survives a client restart. That is what makes the
+ * "ATT has a key the device does not" failure reproducible without hardware.
+ */
+let SIM_DEVICE_COMM_KEY = 0;
+
+/** Test/dev hook: what the simulated terminal currently demands. */
+function setSimulatedCommKey(key) {
+  SIM_DEVICE_COMM_KEY = Number(key) || 0;
+  return SIM_DEVICE_COMM_KEY;
+}
+
 class MockZKDevice {
   constructor(cfg, rosterProvider) {
     this.ip = cfg.ip;
@@ -102,16 +117,50 @@ class MockZKDevice {
     this.getRoster = rosterProvider; // () => [{zk_user_id, full_name, shift:{start_time,end_time}}]
     this.enrolled = new Map(); // userId -> name (device-side memory)
     this.sn = 'SIMZKTECO0001';
+    this.commKey = Number(cfg.commKey) || 0;
   }
 
   async simulateNetwork() {
     await new Promise((r) => setTimeout(r, 120 + Math.random() * 380));
+    // Comm Key mismatch behaves like the real thing: the socket is accepted and
+    // every command is refused.
+    if (SIM_DEVICE_COMM_KEY !== this.commKey) {
+      throw new ZKDeviceError(
+        SIM_DEVICE_COMM_KEY
+          ? `The simulated terminal requires Comm Key ${SIM_DEVICE_COMM_KEY} but ATT is using ${this.commKey}. ` +
+            'Save the same key in ATT (Device & Sync → Comm Key) or reset the simulated device key to 0.'
+          : `The simulated terminal has Comm Key 0 but ATT is sending ${this.commKey}. ` +
+            'Clear the key in ATT (Device & Sync → Comm Key → 0) or write it to the device.'
+      );
+    }
     if (this.failureRate > 0 && Math.random() < this.failureRate) {
       throw new ZKConnectionError(`Simulated drop to ${this.ip}:${this.port} (ETIMEDOUT)`);
     }
   }
 
-  async testConnection() {
+  /** What the simulated terminal says its Comm Key is. */
+  async readCommKey(_opts = {}) {
+    await this.simulateNetwork();
+    return {
+      supported: true,
+      name: 'COMKey',
+      value: String(SIM_DEVICE_COMM_KEY),
+      deviceValue: String(SIM_DEVICE_COMM_KEY),
+      configuredKey: this.commKey,
+      matches: SIM_DEVICE_COMM_KEY === this.commKey,
+      simulated: true,
+      tried: [],
+    };
+  }
+
+  /** Change the simulated terminal's Comm Key (menu → COMM → Comm Key). */
+  async writeCommKey(key, _opts = {}) {
+    await this.simulateNetwork();
+    SIM_DEVICE_COMM_KEY = Number(key) || 0;
+    return { ok: true, name: 'COMKey', simulated: true, deviceValue: String(SIM_DEVICE_COMM_KEY) };
+  }
+
+  async testConnection(_opts = {}) {
     try {
       await this.simulateNetwork();
       const roster = this.getRoster();
@@ -127,6 +176,11 @@ class MockZKDevice {
           deviceName: 'ZKTeco iClock (SIM)',
           userCount: this.enrolled.size || roster.length,
         },
+        commKey: {
+          configured: this.commKey,
+          required: SIM_DEVICE_COMM_KEY !== 0,
+          authenticated: SIM_DEVICE_COMM_KEY === this.commKey,
+        },
       };
     } catch (err) {
       return { ok: false, mode: this.mode, ip: this.ip, port: this.port, error: err.message, retryable: true };
@@ -134,7 +188,7 @@ class MockZKDevice {
   }
 
   /** Live device memory = DB roster, plus anyone pushed via setUser(). */
-  async getUsers() {
+  async getUsers(_opts = {}) {
     await this.simulateNetwork();
     const roster = this.getRoster();
     for (const t of roster) if (!this.enrolled.has(t.zk_user_id)) this.enrolled.set(t.zk_user_id, t.full_name);
@@ -147,7 +201,7 @@ class MockZKDevice {
    * Attendance visible "so far today": returns today's punches with
    * timestamp ≤ now — every poll may surface new punches, like real hardware.
    */
-  async getAttendance() {
+  async getAttendance(_opts = {}) {
     await this.simulateNetwork();
     const now = toLocalISO(new Date());
     const today = todayStr();
@@ -170,7 +224,7 @@ class MockZKDevice {
     return out.map((p) => ({ ...p, deviceSn: this.sn }));
   }
 
-  async setUser({ userId, name }) {
+  async setUser({ userId, name }, _opts = {}) {
     await this.simulateNetwork();
     this.enrolled.set(String(userId), name || String(userId));
     return { ok: true };
@@ -197,4 +251,4 @@ class MockZKDevice {
   }
 }
 
-module.exports = { MockZKDevice, generateDayPunches };
+module.exports = { MockZKDevice, generateDayPunches, setSimulatedCommKey, getSimulatedCommKey: () => SIM_DEVICE_COMM_KEY };

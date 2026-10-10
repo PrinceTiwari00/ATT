@@ -38,6 +38,23 @@ const {
   ZKDeviceError,
   parseDeviceTime,
 } = require('./deviceContract');
+const { DeviceLock, DeviceBusyError, getDeviceLock, isBusyError } = require('./deviceLock');
+const commKeyProto = require('./commKey');
+
+/**
+ * The methods we need, in order of preference. Keep this in sync with the
+ * probe in test/zkLibraryContract.test.js — it asserts these all resolve on the
+ * library that is actually installed, which is the test that catches a rename
+ * (for example node-zklib 1.x ships `getAttendances`, never `getAttendance`).
+ */
+const ZK_METHODS = {
+  connect: ['createSocket', 'connect'],
+  getUsers: ['getUsers'],
+  getLogs: ['getAttendances', 'getAttendance'],
+  getInfo: ['getInfo'],
+  clearLogs: ['clearAttendanceLog', 'clearAttendance'],
+  writeUser: ['setUser', 'createUser'],
+};
 
 /**
  * The methods we need, in order of preference. Keep this in sync with the
@@ -255,7 +272,9 @@ function withTimeout(promise, ms, label) {
 
 class RealZKDevice {
   /**
-   * @param {{ip:string, port:number, timeoutMs:number, inPort:number}} cfg
+   * @param {{ip:string, port:number, timeoutMs:number, inPort:number,
+   *          commKey?:number, explicitHandshake?:boolean, lockWaitMs?:number,
+   *          origin?:string, lock?:object}} cfg
    */
   constructor(cfg) {
     this.ip = cfg.ip;
@@ -263,14 +282,56 @@ class RealZKDevice {
     this.timeoutMs = cfg.timeoutMs;
     this.inPort = cfg.inPort;
     this.mode = 'real';
+    /** Terminal Comm Key (connection password). 0 = device accepts anyone. */
+    this.commKey = cfg.commKey != null ? commKeyProto.normalizeCommKey(cfg.commKey) : 0;
+    /**
+     * Do our own CMD_CONNECT so a keyed terminal is DETECTED instead of
+     * silently accepting the socket and then ignoring every command. Set
+     * ZK_EXPLICIT_HANDSHAKE=false to go back to node-zklib's blind connect.
+     */
+    this.explicitHandshake = cfg.explicitHandshake !== false;
+    /** How long to wait for the device when another ATT operation holds it. */
+    this.lockWaitMs = cfg.lockWaitMs != null ? Math.max(0, Number(cfg.lockWaitMs) || 0) : 0;
+    this.origin = cfg.origin || null;
+    // An explicit DeviceLock (tests, a second terminal); otherwise the shared
+    // process-wide one. NOTE the name: `cfg.lock` is the *timing* object in
+    // config.zk.lock, not a lock instance.
+    this.lock = cfg.deviceLock instanceof DeviceLock ? cfg.deviceLock : null;
+  }
+
+  /** The process-wide "one session at a time" lock. */
+  get deviceLock() {
+    if (!this.lock) this.lock = getDeviceLock();
+    return this.lock;
   }
 
   /**
-   * Connect → run `op(zk)` → always disconnect.
-   * Retries live one layer up (zk/manager.js); this wrapper just guarantees a
-   * clean session for every operation.
+   * Connect → run `op(zk)` → always disconnect, holding the device lock for
+   * the whole session so nothing else in this process can touch the terminal
+   * at the same moment.
+   *
+   * Retries live one layer up (zk/manager.js) and pass their ticket down, so a
+   * retried operation keeps exclusive ownership instead of releasing the
+   * terminal between attempts.
+   *
+   * @param {(zk:object, session:object) => Promise<any>} op
+   * @param {string} label
+   * @param {{ticket?:object, origin?:string, timeoutMs?:number}} [opts]
    */
-  async withConnection(op, label = 'operation') {
+  async withConnection(op, label = 'operation', opts = {}) {
+    return this.deviceLock.runExclusive(
+      label,
+      (ticket) => this.runSession(op, label, ticket),
+      {
+        ticket: opts.ticket || null,
+        origin: opts.origin || this.origin,
+        timeoutMs: opts.timeoutMs != null ? opts.timeoutMs : this.lockWaitMs,
+      }
+    );
+  }
+
+  /** The locked body of withConnection: one socket, one operation, always closed. */
+  async runSession(op, label, ticket) {
     const ZKLib = loadZkLib();
     const zk = new ZKLib(this.ip, this.port, this.timeoutMs, this.inPort);
     const connect = resolveMethodOn(zk, 'connect');
@@ -282,17 +343,75 @@ class RealZKDevice {
         `createSocket ${this.ip}:${this.port}`
       );
     } catch (err) {
-      await safeDisconnect(zk);
-      throw classifyNetworkError(err, this.ip, this.port);
-    }
-
-    try {
-      return await withTimeout(op(zk), this.timeoutMs * 2, label);
-    } catch (err) {
       if (err instanceof ZKConnectionError || err instanceof ZKDeviceError) throw err;
+      if (isBusyError(err)) throw err;
       throw classifyNetworkError(err, this.ip, this.port);
     } finally {
       await safeDisconnect(zk); // never leak a session on the terminal
+    }
+  }
+
+  /**
+   * Open (and authenticate) the session.
+   *
+   * node-zklib's own `createSocket()` sends CMD_CONNECT and only checks that
+   * *something* came back — against a terminal with a Comm Key that "success"
+   * is CMD_ACK_UNAUTH, and every later command then dies with
+   * TIMEOUT_ON_WRITING_MESSAGE. Doing the handshake ourselves means ATT can
+   * authenticate with the key, and can tell the operator when the device has a
+   * key ATT does not know (or the other way round).
+   */
+  async openSession(zk) {
+    const connectLabel = `connect ${this.ip}:${this.port}`;
+    const useExplicit = this.explicitHandshake && Boolean(commKeyProto.transportOf(zk));
+
+    if (!useExplicit) {
+      try {
+        await withTimeout(
+          withoutZlklibBanner(() => zk.createSocket()),
+          this.timeoutMs,
+          connectLabel
+        );
+        return { path: 'library', sessionId: null, commKeyRequired: null, authenticated: false };
+      } catch (err) {
+        await safeDisconnect(zk);
+        throw classifyNetworkError(err, this.ip, this.port);
+      }
+    }
+
+    try {
+      return await withTimeout(
+        withoutZlklibBanner(() =>
+          commKeyProto.openSession(zk, { commKey: this.commKey, ip: this.ip, port: this.port })
+        ),
+        this.timeoutMs,
+        connectLabel
+      );
+    } catch (err) {
+      // Our own, already-explained failures (missing/rejected Comm Key) must
+      // reach the user verbatim — never flattened into "cannot reach device".
+      if (err instanceof ZKConnectionError || err instanceof ZKDeviceError) {
+        await safeDisconnect(zk);
+        throw err;
+      }
+      // node-zklib's UDP fallback only kicks in for a refused TCP port, and
+      // only makes sense while no Comm Key is in play. Keep that behaviour.
+      if (this.commKey === 0 && isRefused(err)) {
+        resetTcpTransport(zk);
+        try {
+          await withTimeout(
+            withoutZlklibBanner(() => zk.createSocket()),
+            this.timeoutMs,
+            connectLabel
+          );
+          return { path: 'library-udp', sessionId: null, commKeyRequired: null, authenticated: false };
+        } catch (udpErr) {
+          await safeDisconnect(zk);
+          throw classifyNetworkError(udpErr, this.ip, this.port);
+        }
+      }
+      await safeDisconnect(zk);
+      throw classifyNetworkError(err, this.ip, this.port);
     }
   }
 
@@ -322,7 +441,7 @@ class RealZKDevice {
 
   async testConnection() {
     try {
-      const info = await this.withConnection(async (zk) => {
+      const { info, session } = await this.withConnection(async (zk, opened) => {
         const out = {};
         try {
           if (typeof zk.getInfo === 'function') {
@@ -332,14 +451,20 @@ class RealZKDevice {
         } catch (_) {
           /* getInfo unsupported on some firmware — not fatal */
         }
-        return out;
-      }, 'getInfo');
+        return { info: out, session: opened };
+      }, 'testConnection', opts);
       return {
         ok: true,
         mode: this.mode,
         ip: this.ip,
         port: this.port,
         device: info,
+        // Proves the Comm Key story: did the terminal ask for one, and did ours work?
+        commKey: {
+          configured: this.commKey,
+          required: session ? session.commKeyRequired === true : null,
+          authenticated: session ? session.authenticated === true : false,
+        },
       };
     } catch (err) {
       return {
@@ -349,6 +474,9 @@ class RealZKDevice {
         port: this.port,
         error: err.message,
         retryable: !!err.retryable,
+        busy: isBusyError(err),
+        code: err.code || null,
+        commKey: { configured: this.commKey, required: null, authenticated: false },
       };
     }
   }
@@ -361,7 +489,7 @@ class RealZKDevice {
       if (!method) throw missingMethodError('getUsers', Object.getPrototypeOf(zk) || zk);
       const raw = await method.fn.call(zk);
       return raw && Array.isArray(raw.data) ? raw.data : raw || [];
-    }, 'getUsers');
+    }, 'getUsers', opts);
 
     return res.map((u) => ({
       userId: firstDefined(u.userid, u.user_id, u.userId, u.userSn, u.sn, u.uid),
@@ -419,16 +547,60 @@ class RealZKDevice {
       const method = resolveMethodOn(zk, 'clearLogs');
       if (method) return method.fn.call(zk);
       return null;
-    }, 'clearAttendanceLog');
+    }, 'clearAttendanceLog', opts);
     return { ok: true };
   }
 }
 
+/** A refused TCP port — the only case where node-zklib's UDP fallback applies. */
+function isRefused(err) {
+  const { code, message } = describeError(err);
+  return code === 'ECONNREFUSED' || /ECONNREFUSED|refused/i.test(message || '');
+}
+
+/**
+ * Clear a half-open TCP transport so `zk.createSocket()` really starts over.
+ * node-zklib leaves `zklibTcp.socket` set after a failed connect, which would
+ * otherwise make the wrapper believe it is already connected.
+ */
+function resetTcpTransport(zk) {
+  destroyTransport(zk && zk.zklibTcp, 'tcp');
+  if (zk) zk.connectionType = null;
+}
+
+/**
+ * Always leave the terminal with ZERO open sockets.
+ *
+ * `zk.disconnect()` routes through the library's `connectionType`, which is only
+ * set once a session is established — so a connection that failed DURING the
+ * handshake (wrong Comm Key, UNAUTH, a refused command) left the raw TCP socket
+ * open on the device. That is a leaked management session: the next attempt
+ * then finds the terminal "busy with another client" — us. Hence the explicit
+ * transport teardown below.
+ */
 async function safeDisconnect(zk) {
   try {
     if (zk && typeof zk.disconnect === 'function') await zk.disconnect();
   } catch (_) {
-    /* ignore: disconnect failures are harmless */
+    /* ignore: disconnect failures are harmless — teardown below is the guarantee */
+  }
+  destroyTransport(zk && zk.zklibTcp, 'tcp');
+  destroyTransport(zk && zk.zklibUdp, 'udp');
+}
+
+/** Force one node-zklib transport closed, whatever state it is in. */
+function destroyTransport(transport, kind) {
+  if (!transport) return;
+  const socket = transport.socket;
+  transport.socket = null;
+  if (!socket) return;
+  try {
+    if (typeof socket.removeAllListeners === 'function') socket.removeAllListeners();
+    if (typeof socket.destroy === 'function') socket.destroy();
+    else if (typeof socket.close === 'function') socket.close(); // dgram (UDP)
+    else if (typeof socket.end === 'function') socket.end();
+  } catch (_) {
+    /* nothing else to try — the device will drop an idle session itself */
   }
 }
 

@@ -8,6 +8,7 @@
 const os = require('os');
 const config = require('./config');
 const { RealZKDevice } = require('./zk/realDevice');
+const { normalizeCommKey } = require('./zk/commKey');
 
 const apiBase = process.env.ATT_API_URL;
 const bridgeToken = config.bridge.token;
@@ -56,6 +57,12 @@ function sleep(ms) {
 }
 
 async function execute(device, command) {
+  // The cloud may send the terminal's Comm Key with the command (so a key
+  // saved in the hosted UI works on the school LAN). Otherwise the agent's own
+  // ZK_COMM_KEY applies.
+  if (command.commKey != null) {
+    device.commKey = normalizeCommKey(command.commKey);
+  }
   switch (command.action) {
     case 'testConnection':
       return device.testConnection();
@@ -65,6 +72,13 @@ async function execute(device, command) {
       return device.getAttendance();
     case 'setUser':
       return device.setUser(command.payload || {});
+    case 'getCommKey':
+      return device.readCommKey();
+    case 'setCommKey':
+      return device.writeCommKey(
+        (command.payload || {}).key,
+        { name: (command.payload || {}).name || null }
+      );
     default:
       throw new Error(`Unsupported bridge command: ${command.action}`);
   }

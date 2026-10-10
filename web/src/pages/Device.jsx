@@ -18,28 +18,61 @@ export default function Device() {
   const [unknown, setUnknown] = useState([]);
   const [logs, setLogs] = useState([]);
   const [importModal, setImportModal] = useState(null); // { users: [...] }
+  const [commKey, setCommKey] = useState(null);
+  const [commKeyModal, setCommKeyModal] = useState(false);
+  const [checkingKey, setCheckingKey] = useState(false);
 
   const load = useCallback(() => {
     api.deviceStatus().then((r) => setStatus(r.data)).catch((e) => toast.error(e.message));
     api.unknownUsers().then((r) => setUnknown(r.data)).catch(() => {});
     api.rawLogs({ limit: 60 }).then((r) => setLogs(r.data)).catch(() => {});
+    // Settings-only view: this must never open a session on the terminal just
+    // because somebody looked at the page (that is how ATT used to fight itself).
+    api.commKey().then((r) => setCommKey(r.data)).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const busy = Boolean(status?.busy);
 
   useEffect(() => {
     load();
-    const id = setInterval(load, 20000);
+    // Poll faster while the terminal is locked so the banner clears promptly.
+    const id = setInterval(load, busy ? 3000 : 20000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, busy]);
+
+  /** Ask the TERMINAL what key it has — one real session, refused while busy. */
+  const checkKeyOnDevice = async () => {
+    setCheckingKey(true);
+    try {
+      const r = await api.commKey({ device: true });
+      setCommKey(r.data);
+      const d = r.data.device;
+      if (d?.supported) {
+        toast.success(`Terminal reports Comm Key ${d.deviceValue}${d.matches ? ' — matches ATT' : ' — DOES NOT match ATT'}`);
+      } else if (d?.ok === false) {
+        toast.warning(d.error);
+      } else {
+        toast.warning('This firmware does not report its Comm Key over the network');
+      }
+    } catch (e) {
+      toast.warning(e.message);
+    } finally {
+      setCheckingKey(false);
+      load();
+    }
+  };
 
   const runTest = async () => {
     setTesting(true);
     try {
       const r = await api.deviceTest();
       setTestResult(r.data);
-      r.data.ok ? toast.success('Connection OK') : toast.error(`Unreachable: ${r.data.error}`);
+      if (r.data.ok) toast.success('Connection OK');
+      else if (r.data.busy) toast.warning(r.data.error); // 409 — ATT is mid-session
+      else toast.error(`Unreachable: ${r.data.error}`);
     } catch (e) {
       setTestResult({ ok: false, error: e.message });
-      toast.error(e.message);
+      e.status === 409 ? toast.warning(e.message) : toast.error(e.message);
     } finally {
       setTesting(false);
       load();
@@ -54,7 +87,7 @@ export default function Device() {
         ? toast.success(`Pulled ${r.data.fetched} logs from device — ${r.data.inserted} new`)
         : toast.warning(r.data.reason || r.data.error || 'Sync skipped');
     } catch (e) {
-      toast.error(e.message);
+      e.status === 409 ? toast.warning(e.message) : toast.error(e.message);
     } finally {
       setSyncing(false);
       load();
@@ -130,6 +163,29 @@ export default function Device() {
         </div>
 
         <div className="space-y-3 p-5">
+          {busy && (
+            <div className="flex items-start gap-2 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-[12px] leading-snug text-indigo-800">
+              <Lock size={14} className="mt-0.5 shrink-0" />
+              <span>
+                <b>Terminal in use — {status?.busyReason}</b>. Device buttons are refused (not queued)
+                until it finishes, so ATT never opens a second session and knocks itself off the terminal.
+                {status?.deviceLock?.waiting?.length > 0 && (
+                  <> {status.deviceLock.waiting.length} request(s) waiting.</>
+                )}
+              </span>
+            </div>
+          )}
+          <StatusRow
+            icon={status?.deviceLock?.locked ? Lock : Unlock}
+            label="Device session"
+            value={status?.deviceLock?.locked ? 'locked' : 'idle'}
+            tone={status?.deviceLock?.locked ? 'text-indigo-600' : 'text-emerald-600'}
+            sub={
+              status?.deviceLock?.locked
+                ? `${status.deviceLock.owner?.label || 'device op'} · ${((status.deviceLock.owner?.heldMs || 0) / 1000).toFixed(1)}s`
+                : `one at a time · ${status?.deviceLock?.policy?.gapMs ?? 0}ms gap between sessions`
+            }
+          />
           <StatusRow icon={Activity} label="Circuit breaker" value={status?.circuit || '—'}
             tone={status?.circuit === 'open' ? 'text-rose-600' : 'text-emerald-600'}
             sub={status?.nextProbeAt ? `probe at ${new Date(status.nextProbeAt).toLocaleTimeString()}` : `${status?.consecutiveFailures ?? 0} consecutive failures`} />
@@ -147,6 +203,11 @@ export default function Device() {
           {status?.lastError && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-[12px] text-rose-700">
               <b>{status.lastError.op}</b>: {status.lastError.message}
+              {status.lastError.hint && (
+                <p className="mt-1.5 border-t border-rose-200/70 pt-1.5 text-[11.5px] leading-snug text-rose-600">
+                  <b>What this usually means:</b> {status.lastError.hint}
+                </p>
+              )}
             </div>
           )}
 
@@ -161,11 +222,21 @@ export default function Device() {
           )}
 
           <div className="grid grid-cols-2 gap-2 pt-1">
-            <button className="btn-ghost" onClick={runTest} disabled={testing}>
+            <button
+              className="btn-ghost"
+              onClick={runTest}
+              disabled={testing || (busy && !testing)}
+              title={busy ? 'The terminal is busy with another ATT operation — only one session at a time' : undefined}
+            >
               <Zap size={15} className={testing ? 'animate-pulse' : ''} /> Test link
             </button>
-            <button className="btn-primary" onClick={runSync} disabled={syncing}>
-              <CloudDownload size={15} className={syncing ? 'animate-bounce' : ''} /> {syncing ? 'Syncing…' : 'Fetch logs now'}
+            <button
+              className="btn-primary"
+              onClick={runSync}
+              disabled={syncing || (busy && !syncing)}
+              title={busy ? 'The terminal is busy with another ATT operation — only one session at a time' : undefined}
+            >
+              <CloudDownload size={15} className={syncing ? 'animate-bounce' : ''} /> {syncing ? 'Syncing…' : busy ? 'Terminal busy…' : 'Fetch logs now'}
             </button>
           </div>
           <Link to="/connect?diagnose=1" className="btn-ghost mt-2 w-full">
@@ -236,6 +307,14 @@ export default function Device() {
           )}
         </div>
 
+        <CommKeyCard
+          state={commKey}
+          busy={busy}
+          checking={checkingKey}
+          onChange={() => setCommKeyModal(true)}
+          onCheck={checkKeyOnDevice}
+        />
+
         {/* Raw ledger preview */}
         <div className="card overflow-hidden">
           <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
@@ -268,6 +347,20 @@ export default function Device() {
         </div>
       </div>
 
+      {commKeyModal && (
+        <CommKeyModal
+          state={commKey}
+          onClose={() => setCommKeyModal(false)}
+          onSaved={(data) => {
+            setCommKeyModal(false);
+            // Reflect the new key at once, drop any stale device-side reading
+            // (it was taken with the previous key), then re-read the truth.
+            setCommKey((k) => ({ ...(k || {}), configured: data.key, set: data.key !== 0, device: null }));
+            load();
+          }}
+        />
+      )}
+
       {/* Import-users modal */}
       {importModal && (
         <ImportModal
@@ -293,7 +386,7 @@ function ConnectionChecklist({ mode, ip, port, bridgeEnabled, bridgeOnline }) {
       ]
     : [
         <>Device has a <b>static IP</b> set under <b>Menu → COMM → Ethernet</b> (currently expecting <code className="font-mono">{ip}:{port}</code>)</>,
-        <><b>Comm Key = 0</b> on the terminal (<b>Menu → COMM → Comm Key</b> or Cloud/Network settings)</>,
+        <>The <b>Comm Key</b> matches on both sides (<b>Menu → COMM → Comm Key</b> on the terminal vs. “Terminal password” below). A key ATT does not know accepts the socket and then refuses every command — and a non-zero key is what keeps other software off the terminal.</>,
         <>The server host can <b>ping {ip}</b> — both machines on the same LAN / routable VLAN</>,
         <>No AP <b>client isolation</b>; the server host can open outbound <b>TCP {port}</b> to the terminal</>,
         <>Device clock is accurate (punches are stored in device-local time)</>,
@@ -325,6 +418,250 @@ function StatusRow({ icon: Icon, label, value, sub, tone }) {
         {sub && <span className="block text-[10.5px] text-slate-400">{sub}</span>}
       </span>
     </div>
+  );
+}
+
+/**
+ * ── Terminal password (Comm Key) ────────────────────────────────────────────
+ * A ZKTeco terminal serves ONE management session. With Comm Key = 0 anything on
+ * the LAN can take it, and whoever connects second kills whoever was there
+ * first — the "Another device is connecting to the device so the connection is
+ * interrupted" failure. A non-zero key makes every client that does not know it
+ * fail the handshake instead.
+ */
+function CommKeyCard({ state, busy, checking, onChange, onCheck }) {
+  const configured = state?.configured ?? 0;
+  const isSet = configured !== 0;
+  const device = state?.device;
+  const mismatch = device && device.supported && device.matches === false;
+  const readFailed = device && device.ok === false;
+
+  return (
+    <div className="card p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${isSet ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+            {isSet ? <ShieldCheck size={18} /> : <KeyRound size={18} />}
+          </div>
+          <div>
+            <h3 className="text-[15px] font-bold text-slate-900">Terminal password (Comm Key)</h3>
+            <p className="max-w-xl text-xs leading-snug text-slate-500">
+              The device's <b>Menu → COMM → Comm Key</b>. Any program that does not know it is refused,
+              so it cannot steal the terminal's single session from ATT.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button className="btn-ghost !py-1.5 !text-xs" onClick={onCheck} disabled={checking || busy}
+            title={busy ? 'The terminal is busy with another ATT operation' : 'Ask the terminal what key it has (one session)'}>
+            <RefreshCw size={13} className={checking ? 'animate-spin' : ''} /> {checking ? 'Asking…' : 'Check against terminal'}
+          </button>
+          <button className="btn-primary !py-1.5 !text-xs" onClick={onChange}
+            disabled={state?.savable === false}
+            title={state?.savable === false ? 'ZK_COMM_KEY is set in this host\'s environment — change it there' : 'Change the key ATT uses, and optionally write it to the terminal'}>
+            <KeyRound size={13} /> {isSet ? 'Change key' : 'Set a key'}
+          </button>
+        </div>
+      </div>
+
+      <div className={`mt-4 rounded-xl border p-3 text-[12.5px] leading-snug ${
+        mismatch || readFailed
+          ? 'border-rose-200 bg-rose-50 text-rose-700'
+          : isSet
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            : 'border-amber-200 bg-amber-50 text-amber-800'
+      }`}>
+        {isSet ? (
+          <b>Comm Key {configured} is in use by ATT</b>
+        ) : (
+          <b>No Comm Key (0)</b>
+        )}
+        {isSet
+          ? ' — ZKTime, a second ATT install and any other LAN software now fail the handshake instead of interrupting a sync.'
+          : ' — the terminal answers any client on the LAN. Close every other ZK program, or set a key to lock them out for good.'}
+        {state?.source && state.source !== 'default' && (
+          <span className="mt-1 block text-[11px] opacity-75">
+            saved in {state.source === 'environment' ? 'the ZK_COMM_KEY environment variable' : 'ATT settings'}
+          </span>
+        )}
+        {state?.savable === false && (
+          <span className="mt-1 block text-[11px] opacity-90">
+            Fixed by the <b>ZK_COMM_KEY</b> environment variable on this host — change it there, not in ATT.
+          </span>
+        )}
+
+        {mismatch && (
+          <p className="mt-2 border-t border-rose-200 pt-2">
+            <b>The terminal reports Comm Key {device.deviceValue}, ATT is using {configured}.</b> Every command will be
+            refused until they match. Save the value from the keypad with “ATT only”, or write a new key to the device.
+          </p>
+        )}
+        {readFailed && (
+          <p className="mt-2 border-t border-rose-200 pt-2">
+            <b>Could not read the terminal:</b> {device.error}
+            {device.hint && <span className="mt-1 block text-[11.5px]">{device.hint}</span>}
+          </p>
+        )}
+        {device?.supported && !mismatch && (
+          <p className="mt-1 text-[11px] opacity-75">Terminal reports {device.deviceValue} via “{device.name}” — matches ATT.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const STEP_LABELS = {
+  persist: 'Saved the new key in ATT',
+  'read-device': 'Read the key currently on the terminal',
+  'write-device': 'Wrote the new key to the terminal',
+  verify: 'Logged in again with the new key',
+  apply: 'ATT switched over to the new key',
+  rollback: 'Rolled the terminal back',
+  restore: 'Restored the previous key in ATT',
+};
+
+function CommKeyModal({ state, onClose, onSaved }) {
+  const toast = useToast();
+  const current = state?.configured ?? 0;
+  const [key, setKey] = useState(String(current || 1));
+  const [writeToDevice, setWriteToDevice] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState(null); // { ok, steps } | { error, steps }
+
+  const canWrite = state?.supportedByLibrary !== false;
+
+  const submit = async () => {
+    const numeric = Number(String(key).trim());
+    if (!Number.isFinite(numeric) || numeric < 0 || Math.trunc(numeric) !== numeric) {
+      return toast.error('The Comm Key must be a whole number');
+    }
+    if (numeric > 999999) return toast.error('Use at most 6 digits — you may have to type it on the keypad one day');
+    setSaving(true);
+    setResult(null);
+    try {
+      const r = await api.setCommKey(numeric, writeToDevice && canWrite);
+      setResult({ ok: true, steps: r.data.steps || [] });
+      toast.success(
+        r.data.writeToDevice
+          ? `Comm Key ${numeric} written to the terminal and verified`
+          : `ATT is now using Comm Key ${numeric}`
+      );
+      if (r.data.rebootRecommended) {
+        toast.warning('Reboot the terminal once so any client still holding the old session is dropped');
+      }
+      onSaved(r.data);
+    } catch (e) {
+      const steps = e.body?.data?.steps || [];
+      setResult({ ok: false, error: e.message, steps });
+      e.status === 409 ? toast.warning(e.message) : toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open onClose={onClose} title="Terminal password (Comm Key)"
+      subtitle={`Currently ${current === 0 ? 'not set (0)' : `set to ${current}`} · Menu → COMM → Comm Key`}
+      width="max-w-xl">
+      <div className="space-y-4">
+        <div>
+          <label className="mb-1 block text-[12px] font-semibold text-slate-600">New Comm Key</label>
+          <div className="flex items-center gap-2">
+            <input
+              className="input font-mono"
+              type="number"
+              min="0"
+              max="999999"
+              step="1"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder="1"
+            />
+            <button className="btn-ghost shrink-0" onClick={() => setKey('1')} title="The usual choice: short and typeable on the keypad">Use 1</button>
+            <button className="btn-ghost shrink-0" onClick={() => setKey('0')} title="0 removes the password">Remove (0)</button>
+          </div>
+          <p className="mt-1.5 text-[11.5px] leading-snug text-slate-500">
+            <b>0</b> = the terminal answers any program on the LAN. <b>Any other number</b> = only a client that knows
+            it can talk to the device, so ZKTime / a second ATT install can no longer interrupt a sync.
+            Keep it short — you may need to type it on the keypad to recover the device.
+          </p>
+        </div>
+
+        <div className="space-y-2 rounded-xl border border-slate-200 p-3">
+          <label className={`flex items-start gap-2.5 ${canWrite ? 'cursor-pointer' : 'opacity-50'}`}>
+            <input type="radio" className="mt-1 accent-indigo-600" checked={writeToDevice && canWrite}
+              disabled={!canWrite} onChange={() => setWriteToDevice(true)} />
+            <span>
+              <span className="block text-[13px] font-semibold text-slate-700">Write it to the terminal too <span className="font-normal text-slate-400">(recommended)</span></span>
+              <span className="block text-[12px] leading-snug text-slate-500">
+                ATT reads the current key, writes the new one, then <b>logs in again to verify it</b>. If that login
+                fails it puts the old key back and changes nothing — so this cannot lock you out.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2.5">
+            <input type="radio" className="mt-1 accent-indigo-600" checked={!writeToDevice || !canWrite}
+              onChange={() => setWriteToDevice(false)} />
+            <span>
+              <span className="block text-[13px] font-semibold text-slate-700">ATT only — I already typed it on the keypad</span>
+              <span className="block text-[12px] leading-snug text-slate-500">
+                Saves the key ATT uses without touching the device. Use this when the terminal is unreachable, or when
+                its firmware refuses remote option writes.
+              </span>
+            </span>
+          </label>
+          {!canWrite && (
+            <p className="text-[11.5px] text-amber-700">
+              This device link cannot change the key remotely — the terminal itself must be set on the keypad.
+            </p>
+          )}
+        </div>
+
+        {Number(key) !== 0 && writeToDevice && canWrite && (
+          <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-[12px] leading-snug text-indigo-800">
+            <b>After the change:</b> any other software pointing at this terminal (ZKTime, an old ATT copy, a
+            vendor demo tool) stops working until it is given the same key. That is the point — but tell whoever
+            runs it. A terminal reboot drops any session that was already open.
+          </div>
+        )}
+
+        {result && (
+          <div className={`rounded-xl border p-3 text-[12px] ${result.ok ? 'border-emerald-200 bg-emerald-50' : 'border-rose-200 bg-rose-50'}`}>
+            {result.ok ? (
+              <div className="flex items-center gap-1.5 font-semibold text-emerald-700">
+                <CheckCircle2 size={14} /> Comm Key updated
+              </div>
+            ) : (
+              <div className="font-semibold text-rose-700">✕ {result.error}</div>
+            )}
+            {result.steps?.length > 0 && (
+              <ol className="mt-2 space-y-1">
+                {result.steps.map((st, i) => (
+                  <li key={i} className="flex items-start gap-2 text-[11.5px] text-slate-600">
+                    <span className={st.ok === false ? 'text-rose-600' : 'text-emerald-600'}>
+                      {st.ok === false ? '✕' : '✓'}
+                    </span>
+                    <span>
+                      {STEP_LABELS[st.step] || st.step}
+                      {st.name ? ` (${st.name})` : ''}
+                      {st.value !== undefined && st.value !== null ? ` → ${st.value}` : ''}
+                      {st.error ? ` — ${st.error}` : ''}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 flex justify-end gap-2">
+        <button className="btn-ghost" onClick={onClose}>{result?.ok ? 'Done' : 'Cancel'}</button>
+        <button className="btn-primary" onClick={submit} disabled={saving}>
+          <KeyRound size={15} /> {saving ? 'Working…' : Number(key) === 0 ? 'Remove the password' : 'Save Comm Key'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

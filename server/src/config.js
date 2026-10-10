@@ -81,6 +81,32 @@ const config = {
     timeoutMs: parseInt(process.env.ZK_TIMEOUT_MS || '10000', 10),
     // node-zklib reply port used for the UDP keep-alive channel on some firmware
     inPort: parseInt(process.env.ZK_INPORT || '5200', 10),
+    /**
+     * Comm Key = the terminal's connection password (Menu → COMM → Comm Key).
+     * 0 (the default) = the device answers any client on the LAN. A non-zero
+     * key makes ATT authenticate and makes every OTHER client fail the
+     * handshake — the clean way to stop ZKTime / a second install from
+     * stealing the terminal's single management session.
+     */
+    commKey: normalizeCommKeyEnv(process.env.ZK_COMM_KEY),
+    /**
+     * Run our own CMD_CONNECT so a keyed terminal is detected and
+     * authenticated instead of silently ignoring every command.
+     */
+    explicitHandshake: process.env.ZK_EXPLICIT_HANDSHAKE !== 'false',
+    /* One session at a time — see zk/deviceLock.js. */
+    lock: {
+      // 0 (default) = refuse a second device operation immediately with a
+      // clear "terminal is busy" 409 instead of letting requests pile up.
+      // >0 = wait that long for the running operation to finish first.
+      waitMs: Math.max(0, parseInt(process.env.ZK_LOCK_WAIT_MS || '0', 10) || 0),
+      // Force-release the lock if an operation outlives this (a wedged socket
+      // must never disable device access for good).
+      staleMs: Math.max(5000, parseInt(process.env.ZK_LOCK_STALE_MS || '120000', 10) || 120000),
+      // Pause between sessions so the terminal can release the previous one —
+      // back-to-back connects are a classic ECONNRESET source.
+      gapMs: Math.max(0, parseInt(process.env.ZK_SESSION_GAP_MS || '350', 10) || 0),
+    },
     // Simulate intermittent connection drops in mock mode (0..1). 0 = never.
     mockFailureRate: num(process.env.ZK_MOCK_FAILURE_RATE, 0),
     // Mock sim visibility for the current day:

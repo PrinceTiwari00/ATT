@@ -48,8 +48,11 @@ instance lock, and the tray icon shows device status all day.
 
 ### 1. Configure & connect your ZKTeco terminal — **[docs/HARDWARE_SETUP.md](docs/HARDWARE_SETUP.md)** ← start here
 
-TL;DR: static IP on the terminal (`192.168.1.110`), **Comm Key = 0**, port
-4370 reachable from the server, accurate device clock. Then:
+TL;DR: static IP on the terminal (`192.168.1.110`), port 4370 reachable from
+the server, accurate device clock, and a **Comm Key both sides agree on**
+(`0` works, a non-zero key is recommended — it stops other software from
+stealing the terminal's single session; set it from *Device & Sync → Terminal
+password*). Then:
 
 ```bash
 cd server
