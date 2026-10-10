@@ -32,16 +32,15 @@ const {
   adoptAndRecompute,
 } = require('../src/services/processor');
 const { todayStr } = require('../src/zk/deviceContract');
+const { addDays } = require('../src/lib/localDate');
 
 migrate();
 
 const db = getDb();
 const TODAY = todayStr();
-const TOMORROW = (() => {
-  const d = new Date(`${TODAY}T00:00:00`);
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
-})();
+// Calendar arithmetic on the local date. Never toISOString() here: in zones
+// east of UTC, local midnight is the previous UTC day and TOMORROW == TODAY.
+const TOMORROW = addDays(TODAY, 1);
 
 db.prepare(
   `INSERT INTO shifts (name, start_time, end_time, grace_period_minutes, is_default)

@@ -14,6 +14,7 @@
 const { getDb } = require('../db/connection');
 const { evaluateDay } = require('../utils/attendanceLogic');
 const { todayStr } = require('../zk/deviceContract');
+const { todayKey, eachDay } = require('../lib/localDate');
 
 function getDefaultShift(db) {
   return (
@@ -95,13 +96,10 @@ function recomputeDate(workDate) {
 
 function recomputeRange(from, to) {
   const days = [];
-  const d = new Date(from + 'T00:00:00');
-  const end = new Date(to + 'T00:00:00');
-  while (d <= end && days.length < 93) {
-    const s = d.toISOString().slice(0, 10);
-    recomputeDate(s);
-    days.push(s);
-    d.setDate(d.getDate() + 1);
+  for (const key of eachDay(from, to)) {
+    if (days.length >= 93) break;
+    recomputeDate(key);
+    days.push(key);
   }
   return days;
 }
@@ -170,18 +168,16 @@ function adoptAndRecompute({ includeToday = false } = {}) {
  */
 function ensureProcessed(from, to) {
   const db = getDb();
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
-  const d = new Date(from + 'T00:00:00');
-  const end = new Date(Math.min(new Date(to + 'T00:00:00').getTime(), new Date(todayStr + 'T00:00:00').getTime()));
+  const today = todayKey();
+  // day keys are zero-padded YYYY-MM-DD, so string order is calendar order
+  const end = to < today ? to : today;
   let guard = 0;
-  while (d <= end && guard++ < 31) {
-    const s = d.toISOString().slice(0, 10);
+  for (const s of eachDay(from, end)) {
+    if (guard++ >= 31) break;
     const has = db
       .prepare('SELECT 1 FROM processed_attendance WHERE work_date = ? LIMIT 1')
       .get(s);
     if (!has) recomputeDate(s);
-    d.setDate(d.getDate() + 1);
   }
 }
 

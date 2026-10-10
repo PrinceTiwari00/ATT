@@ -4,6 +4,7 @@
 const express = require('express');
 const { getDb } = require('../db/connection');
 const { recomputeRange } = require('../services/processor');
+const { todayKey, addDays } = require('../lib/localDate');
 
 const router = express.Router();
 const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
@@ -92,8 +93,8 @@ router.put('/:id', (req, res) => {
   // Shift timings changed → statuses for last 30 days may be stale; rebuild.
   const timingChanged = keys.some((k) => ['start_time', 'end_time', 'grace_period_minutes'].includes(k));
   if (timingChanged) {
-    const today = new Date().toISOString().slice(0, 10);
-    const from = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+    const today = todayKey();
+    const from = addDays(today, -30);
     recomputeRange(from, today);
   }
 
