@@ -241,12 +241,11 @@ class MockZKDevice {
       canFetchUsers: true,
       canClearAttendance: true,
       canWriteUsers: true,
-      canUseCommKey: true,
       availableMethods: [],
     };
   }
 
-  async clearAttendance(_opts = {}) {
+  async clearAttendance() {
     await this.simulateNetwork();
     return { ok: true, note: 'simulation keeps generated history' };
   }

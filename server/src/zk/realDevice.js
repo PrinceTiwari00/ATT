@@ -28,19 +28,6 @@
  *                             call resolves against the INSTALLED library and
  *                             a missing method raises an actionable error
  *                             instead of `undefined is not a function`.
- *   • ONE session at a time — every connect goes through the process-wide
- *                             device lock (zk/deviceLock.js), so the poller,
- *                             the UI buttons, the LAN sweep and the bridge
- *                             agent can never open two sockets to the
- *                             terminal at once. That self-collision is what
- *                             produces TIMEOUT_ON_WRITING_MESSAGE and
- *                             "Another device is connecting to the device so
- *                             the connection is interrupted" (ECONNRESET).
- *   • Comm Key (device password) — ATT completes the CMD_CONNECT →
- *                             CMD_ACK_UNAUTH → CMD_AUTH handshake node-zklib
- *                             does not implement, so a terminal can be keyed
- *                             against every other client (zk/commKey.js). It
- *                             can also read and WRITE that key on the device.
  *
  *  Cloud deployments should use BridgeZKDevice on the server and run this
  *  adapter locally inside the authenticated LAN-side agent.
@@ -53,6 +40,21 @@ const {
 } = require('./deviceContract');
 const { DeviceLock, DeviceBusyError, getDeviceLock, isBusyError } = require('./deviceLock');
 const commKeyProto = require('./commKey');
+
+/**
+ * The methods we need, in order of preference. Keep this in sync with the
+ * probe in test/zkLibraryContract.test.js — it asserts these all resolve on the
+ * library that is actually installed, which is the test that catches a rename
+ * (for example node-zklib 1.x ships `getAttendances`, never `getAttendance`).
+ */
+const ZK_METHODS = {
+  connect: ['createSocket', 'connect'],
+  getUsers: ['getUsers'],
+  getLogs: ['getAttendances', 'getAttendance'],
+  getInfo: ['getInfo'],
+  clearLogs: ['clearAttendanceLog', 'clearAttendance'],
+  writeUser: ['setUser', 'createUser'],
+};
 
 /**
  * The methods we need, in order of preference. Keep this in sync with the
@@ -153,10 +155,6 @@ async function withoutZlklibBanner(fn) {
 /** Static capability report — works while the terminal is offline (no socket). */
 function capabilitiesFrom(source, version) {
   const canWriteUsers = Boolean(resolveMethodOn(source, 'writeUser'));
-  // The Comm Key handshake and the option read/write both go through the
-  // library's raw command channel; without it ATT can still talk to a device
-  // whose Comm Key is 0, but it cannot authenticate or set one.
-  const canSendRawCommand = Boolean(source && typeof source.executeCmd === 'function');
   const caps = {
     source: 'real',
     library: 'node-zklib',
@@ -166,7 +164,6 @@ function capabilitiesFrom(source, version) {
     canFetchUsers: Boolean(resolveMethodOn(source, 'getUsers')),
     canClearAttendance: Boolean(resolveMethodOn(source, 'clearLogs')),
     canWriteUsers,
-    canUseCommKey: canSendRawCommand,
     availableMethods: methodNames(source),
   };
   if (!caps.installed) {
@@ -177,11 +174,6 @@ function capabilitiesFrom(source, version) {
       `node-zklib${version ? ` v${version}` : ''} can read users and logs but cannot create users on the ` +
       'terminal (it has no setUser API). Enroll people on the device itself — Menu → User Mgt → New User — ' +
       'then use "Fetch device users" → Import to link them here.';
-  }
-  if (caps.installed && !canSendRawCommand) {
-    caps.commKeyHint =
-      'This library build exposes no raw command channel, so ATT cannot perform the Comm Key handshake or ' +
-      'change the key on the terminal. Leave Comm Key = 0 on the device keypad.';
   }
   return caps;
 }
@@ -261,64 +253,10 @@ function classifyNetworkError(err, ip, port) {
   // Keep the library's human phrasing ("IP of the device is refused") and add
   // the OS code for whoever supports the school.
   const detail = code && !message.includes(code) ? `${message} (${code})` : message;
-
-  // A session that was accepted and then went silent / was torn down is the
-  // signature of the terminal's SINGLE management slot being taken by someone
-  // else (another ATT copy, ZKTime, a laptop on the LAN) — or of a Comm Key
-  // mismatch, where the device accepts the socket and refuses every command.
-  // Say so, because "cannot reach the device" sends the school chasing cables.
-  const hint = sessionFaultHint(message, code);
-
-  if (retryableCodes.test(message) || retryableCodes.test(String(code)) || hint) {
-    const out = new ZKConnectionError(
-      hint ? `${hint.headline} at ${ip}:${port} — ${detail}` : `Cannot reach ZKTeco device at ${ip}:${port} — ${detail}`,
-      err
-    );
-    if (hint) {
-      out.hint = hint.text;
-      out.fault = hint.fault;
-    }
-    return out;
+  if (retryableCodes.test(message) || retryableCodes.test(String(code))) {
+    return new ZKConnectionError(`Cannot reach ZKTeco device at ${ip}:${port} — ${detail}`, err);
   }
-  const deviceErr = new ZKDeviceError(`ZKTeco protocol error at ${ip}:${port} — ${detail}`, err);
-  if (hint) {
-    deviceErr.hint = hint.text;
-    deviceErr.fault = hint.fault;
-  }
-  return deviceErr;
-}
-
-/**
- * Recognise the two failures that mean "the terminal's one session was
- * contested" and explain them in plain language. Returns null for anything
- * else so ordinary network faults keep their normal message.
- */
-function sessionFaultHint(message, code) {
-  const text = `${message || ''} ${code || ''}`;
-  if (/TIMEOUT_ON_WRITING_MESSAGE|NO_REPLY_ON_CMD_CONNECT|TIMEOUT_ON_RECEIVING/i.test(text)) {
-    return {
-      fault: 'session-no-reply',
-      headline: 'ZKTeco device accepted the connection but never answered',
-      text:
-        'The terminal took the TCP connection and then stayed silent. That is its single management session being ' +
-        'held by another client (ZKTime, a second ATT install, a laptop on the LAN), or a Comm Key mismatch — a ' +
-        'keyed device accepts the socket and refuses every command. ATT already serialises its own access, so: ' +
-        'close other ZK software, check Device & Sync → Comm Key matches Menu → COMM → Comm Key, and reboot the ' +
-        'terminal if it stays stuck.',
-    };
-  }
-  if (/ECONNRESET|Socket is disconnected unexpectedly|PACKETS REMAIN|Another device is connecting/i.test(text)) {
-    return {
-      fault: 'session-stolen',
-      headline: 'ZKTeco device dropped the connection mid-command',
-      text:
-        'Another client opened a session on the terminal while ATT was talking to it, and the device cut ATT off ' +
-        '(a ZKTeco terminal serves one management connection). Close every other ZK program and any second copy of ' +
-        'ATT. Setting a non-zero Comm Key (Device & Sync → Comm Key) makes other software fail the handshake ' +
-        'instead of stealing the session.',
-    };
-  }
-  return null;
+  return new ZKDeviceError(`ZKTeco protocol error at ${ip}:${port} — ${detail}`, err);
 }
 
 function withTimeout(promise, ms, label) {
@@ -396,13 +334,14 @@ class RealZKDevice {
   async runSession(op, label, ticket) {
     const ZKLib = loadZkLib();
     const zk = new ZKLib(this.ip, this.port, this.timeoutMs, this.inPort);
-    const session = await this.openSession(zk);
-
+    const connect = resolveMethodOn(zk, 'connect');
+    if (!connect) throw missingMethodError('connect', Object.getPrototypeOf(zk) || zk);
     try {
-      // The ticket is passed to the operation so a nested device call inside a
-      // batch (push-all, comm-key change) re-enters this same session lock
-      // instead of deadlocking against itself.
-      return await withTimeout(op(zk, session, ticket), this.timeoutMs * 2, label);
+      await withTimeout(
+        withoutZlklibBanner(() => connect.fn.call(zk)),
+        this.timeoutMs,
+        `createSocket ${this.ip}:${this.port}`
+      );
     } catch (err) {
       if (err instanceof ZKConnectionError || err instanceof ZKDeviceError) throw err;
       if (isBusyError(err)) throw err;
@@ -476,43 +415,6 @@ class RealZKDevice {
     }
   }
 
-  /**
-   * What the terminal itself says about its Comm Key. Reads the device option
-   * (`COMKey` on most firmware) inside ONE locked session.
-   *
-   * @returns {Promise<{supported:boolean, name:string|null, deviceValue:string|null,
-   *                    configuredKey:number, matches:boolean|null, tried:Array}>}
-   */
-  async readCommKey(opts = {}) {
-    const configuredKey = this.commKey;
-    const read = await this.withConnection(
-      async (zk) => commKeyProto.readCommKeyOption(zk),
-      'readCommKey',
-      opts
-    );
-    const deviceValue = read.supported ? String(read.value) : null;
-    return {
-      ...read,
-      configuredKey,
-      deviceValue,
-      // null when the firmware would not tell us
-      matches: deviceValue == null ? null : Number(deviceValue) === configuredKey,
-    };
-  }
-
-  /**
-   * Write a new Comm Key ONTO the terminal (Menu → COMM → Comm Key, remotely).
-   * Returns the option spelling the firmware accepted.
-   */
-  async writeCommKey(key, { name = null } = {}, opts = {}) {
-    const value = commKeyProto.normalizeCommKey(key);
-    return this.withConnection(
-      async (zk) => commKeyProto.writeCommKeyOption(zk, value, { name }),
-      `writeCommKey(${value})`,
-      opts
-    );
-  }
-
   /** What the installed library can actually do (no connection required). */
   static capabilities() {
     const proto = libraryProto();
@@ -537,7 +439,7 @@ class RealZKDevice {
     return resolved.name;
   }
 
-  async testConnection(opts = {}) {
+  async testConnection() {
     try {
       const { info, session } = await this.withConnection(async (zk, opened) => {
         const out = {};
@@ -580,7 +482,7 @@ class RealZKDevice {
   }
 
   /** Pull enrolled users from the device memory (→ map to teachers). */
-  async getUsers(opts = {}) {
+  async getUsers() {
     this.assertSupports('getUsers');
     const res = await this.withConnection(async (zk) => {
       const method = resolveMethodOn(zk, 'getUsers');
@@ -607,14 +509,14 @@ class RealZKDevice {
    * "zk.getAttendance is not a function" failure on every real-device sync.
    * Resolution goes through ZK_METHODS so either spelling works.
    */
-  async getAttendance(opts = {}) {
+  async getAttendance() {
     const method = this.assertSupports('getLogs');
     const logs = await this.withConnection(async (zk) => {
       const resolved = resolveMethodOn(zk, 'getLogs');
       if (!resolved) throw missingMethodError('getLogs', Object.getPrototypeOf(zk) || zk);
       const raw = await resolved.fn.call(zk);
       return raw && Array.isArray(raw.data) ? raw.data : raw || [];
-    }, method, opts);
+    }, method);
 
     return normalizeAttendanceRecords(logs);
   }
@@ -626,7 +528,7 @@ class RealZKDevice {
    * absent), so this throws an actionable ZKDeviceError unless the installed
    * library actually provides one. Callers should check capabilities() first.
    */
-  async setUser({ userId, name, uid, role = 0, password = '', cardno = 0 }, opts = {}) {
+  async setUser({ userId, name, uid, role = 0, password = '', cardno = 0 }) {
     this.assertSupports('writeUser');
     const numericUid = uid != null ? uid : stableNumericUid(String(userId));
     await this.withConnection(async (zk) => {
@@ -634,12 +536,12 @@ class RealZKDevice {
       if (!method) throw missingMethodError('writeUser', Object.getPrototypeOf(zk) || zk);
       // setUser(uid, userid, name, password, role, cardno)
       return method.fn.call(zk, numericUid, String(userId), name || String(userId), password, role, cardno);
-    }, `setUser ${userId}`, opts);
+    }, `setUser ${userId}`);
     return { ok: true };
   }
 
   /** Danger: wipes the terminal attendance memory. Call only manually. */
-  async clearAttendance(opts = {}) {
+  async clearAttendance() {
     this.assertSupports('clearLogs');
     await this.withConnection(async (zk) => {
       const method = resolveMethodOn(zk, 'clearLogs');
@@ -724,12 +626,6 @@ module.exports = {
   normalizeAttendanceRecords,
   missingMethodError,
   withoutZlklibBanner,
-  DeviceBusyError,
   describeError,
   classifyNetworkError,
-  sessionFaultHint,
-  isRefused,
-  resetTcpTransport,
-  safeDisconnect,
-  destroyTransport,
 };

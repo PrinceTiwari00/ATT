@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom';
 import {
   Wifi, WifiOff, RefreshCw, Zap, CloudDownload, CloudUpload, Users,
   Fingerprint, Activity, Database, AlertTriangle, Server, CheckCircle2, Radar,
-  Lock, Unlock, KeyRound, ShieldCheck,
 } from 'lucide-react';
 import { api, fmtTime } from '../api/client';
 import Modal from '../components/Modal';
@@ -260,15 +259,12 @@ export default function Device() {
               <p className="text-xs text-slate-500">Push teacher IDs to device memory, or import IDs already on the terminal.</p>
             </div>
             <div className="flex gap-2">
-              <button className="btn-ghost" onClick={fetchUsers} disabled={busy}
-                title={busy ? 'The terminal is busy with another ATT operation' : undefined}>
-                <CloudDownload size={15} /> Fetch device users
-              </button>
+              <button className="btn-ghost" onClick={fetchUsers}><CloudDownload size={15} /> Fetch device users</button>
               <button
                 className="btn-success"
                 onClick={pushAll}
-                disabled={pushing || !canWriteUsers || busy}
-                title={!canWriteUsers ? caps.writeUsersHint : busy ? 'The terminal is busy with another ATT operation' : undefined}
+                disabled={pushing || !canWriteUsers}
+                title={canWriteUsers ? undefined : caps.writeUsersHint}
               >
                 <CloudUpload size={15} className={pushing ? 'animate-pulse' : ''} /> {pushing ? 'Pushing…' : 'Push all teachers → device'}
               </button>

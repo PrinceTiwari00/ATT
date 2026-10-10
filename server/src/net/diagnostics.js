@@ -160,27 +160,15 @@ const ERROR_HINTS = {
   ENETDOWN: 'The network interface of this computer is down.',
   EAI_AGAIN: 'DNS lookup failed. Use the numeric IP address of the terminal instead of a hostname.',
   ENOTFOUND: 'Hostname could not be resolved. Use the numeric IP address of the terminal.',
-  ECONNRESET: 'The device closed the connection mid-command. ZKTeco terminals allow only ONE management session — another client took it over. Close ZKTime/other software (and any second copy of ATT), or set a Comm Key on the terminal so other clients are refused instead.',
-  TIMEOUT_ON_WRITING_MESSAGE: 'The terminal accepted the connection but never answered the command. That is its single session being held by another client, or a Comm Key it is waiting for — check Menu → COMM → Comm Key against Device & Sync → Comm Key.',
+  ECONNRESET: 'The device closed the connection. ZKTeco terminals allow only one management session — close ZKTime/other software and try again.',
 };
 
 function hintFor(errorCode, message = '') {
+  if (ERROR_HINTS[errorCode]) return [ERROR_HINTS[errorCode]];
   const hints = [];
-  if (ERROR_HINTS[errorCode]) hints.push(ERROR_HINTS[errorCode]);
-  // node-zklib reports a silent device as a write timeout, not as an ETIMEDOUT.
-  if (/TIMEOUT_ON_WRITING_MESSAGE|NO_REPLY_ON_CMD_CONNECT/i.test(message || '')) {
-    if (!hints.includes(ERROR_HINTS.TIMEOUT_ON_WRITING_MESSAGE)) hints.push(ERROR_HINTS.TIMEOUT_ON_WRITING_MESSAGE);
-  } else if (!hints.length && /timeout|timed out/i.test(message)) {
-    hints.push(ERROR_HINTS.ETIMEDOUT);
-  }
-  if (/comm key|password|UNAUTH/i.test(message || '')) {
-    hints.push(
-      'The terminal is asking for its Comm Key (connection password). Read it on the keypad — Menu → COMM → ' +
-        'Comm Key — and save the same number in ATT (Device & Sync → Terminal password), or set it to 0 on the device.'
-    );
-  }
-  if (/Another device is connecting/i.test(message || '') && !hints.includes(ERROR_HINTS.ECONNRESET)) {
-    hints.push(ERROR_HINTS.ECONNRESET);
+  if (/timeout|timed out/i.test(message)) hints.push(ERROR_HINTS.ETIMEDOUT);
+  if (/comm key|password/i.test(message)) {
+    hints.push('Connects but rejects commands → set Menu → COMM → Comm Key = 0 on the terminal.');
   }
   return hints;
 }
@@ -465,15 +453,7 @@ async function diagnose({
     } catch (err) {
       handshake = { ok: false, error: err.message };
     }
-    if (handshake && handshake.busy) {
-      // ATT holds the terminal's only session — diagnostics must not try to
-      // open a second one, or it would cause the very collision it is looking
-      // for. Reported as skipped, never as a device fault.
-      add('handshake', 'ZKTeco protocol handshake', 'skipped',
-        'Skipped — the terminal is busy with another ATT operation. ATT allows one device session at a time, so this check waits its turn.',
-        ['Run diagnostics again once the sync finishes (a few seconds).',
-         'If the terminal stays busy for minutes, see Device & Sync → Device session: it names the operation holding the lock.']);
-    } else if (handshake && handshake.ok) {
+    if (handshake && handshake.ok) {
       const d = handshake.device || {};
       const bits = [d.productName, d.serialNumber || d.sn, d.version || d.firmwareVersion].filter(Boolean);
       add('handshake', 'ZKTeco protocol handshake', 'pass',
@@ -482,11 +462,8 @@ async function diagnose({
     } else {
       add('handshake', 'ZKTeco protocol handshake', 'fail',
         (handshake && handshake.error) || 'The port is open but the terminal did not answer the ZK protocol.',
-        ['Match the Comm Key: read it on the keypad (Menu → COMM → Comm Key) and save the same value in ATT — ' +
-           'Device & Sync → Terminal password. A key ATT does not know accepts the socket and then refuses every command. ' +
-           'Setting a non-zero key is also the way to keep other software OFF the terminal.',
-         'Close ZKTime / ZKAccess / any other management software: the terminal serves only one session at a time. ' +
-           'ATT serialises its own access, so a "terminal is busy" message means it is protecting the session, not failing.',
+        ['Set Menu → COMM → Comm Key (Password) = 0 — a non-zero key accepts the socket and then rejects every command.',
+         'Close ZKTime / ZKAccess / any other management software: the terminal serves only one session at a time.',
          'Check the device clock (Menu → System → Date/Time); a wrong clock skews late/early minutes.'],
         { error: handshake && handshake.error });
     }
@@ -497,8 +474,7 @@ async function diagnose({
   }
 
   const failed = steps.filter((s) => s.status === 'fail');
-  // A busy handshake is a skip, not a failure: the port answered, ATT just owns it.
-  const ok = probe.ok && (!handshake || handshake.ok !== false || handshake.busy === true);
+  const ok = probe.ok && (!handshake || handshake.ok !== false);
   return {
     ok,
     target: { ip, port },

@@ -62,20 +62,6 @@ function readZkMode() {
   return zkMode;
 }
 
-/**
- * Comm Key from the environment: a small non-negative integer, 0 = "no key".
- * Garbage never takes the link down — it is reported and treated as 0.
- */
-function normalizeCommKeyEnv(raw) {
-  if (raw === undefined || raw === null || String(raw).trim() === '') return 0;
-  const n = Number(String(raw).trim());
-  if (!Number.isFinite(n) || n < 0) {
-    console.warn(`[config] ignoring invalid ZK_COMM_KEY "${raw}" — must be a number ≥ 0 (using 0)`);
-    return 0;
-  }
-  return Math.trunc(n);
-}
-
 const config = {
   env: process.env.NODE_ENV || 'development',
   version: process.env.ATT_APP_VERSION || readVersion(),
@@ -199,9 +185,6 @@ function applySettings(patch = {}) {
     ['device.port', (v) => { config.zk.port = parseInt(v, 10); changed.zk = true; }],
     ['device.timeoutMs', (v) => { config.zk.timeoutMs = parseInt(v, 10); changed.zk = true; }],
     ['device.inPort', (v) => { config.zk.inPort = parseInt(v, 10); changed.zk = true; }],
-    // A new Comm Key must reach the adapter immediately: the manager rebuilds
-    // it on changed.zk, so the very next session authenticates with the new key.
-    ['device.commKey', (v) => { config.zk.commKey = normalizeCommKeyEnv(v); changed.zk = true; }],
     ['poll.enabled', (v) => { config.poll.enabled = v !== false && v !== 'false'; changed.poll = true; }],
     ['poll.intervalMinutes', (v) => { config.poll.intervalMinutes = num(v, config.poll.intervalMinutes); changed.poll = true; }],
     ['desktop.autostart', (v) => { config.desktop.autostart = v === true || v === 'true'; changed.desktop = true; }],
@@ -224,4 +207,3 @@ function applySettings(patch = {}) {
 module.exports = config;
 module.exports.applySettings = applySettings;
 module.exports.settingsApplied = settingsApplied;
-module.exports.normalizeCommKeyEnv = normalizeCommKeyEnv;

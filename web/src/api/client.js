@@ -94,12 +94,6 @@ export const api = {
     request(`/device/users/import`, { method: 'POST', body: JSON.stringify({ users, ...extra }) }),
   pushAllTeachers: () => request(`/device/users/push-all`, { method: 'POST' }),
   unknownUsers: () => request(`/device/unknown-users`),
-  // Terminal Comm Key (connection password) — read state / change it.
-  // device=false is the cheap settings-only view; device=true opens a session on
-  // the terminal to ask it what key it has (so it can be refused while busy).
-  commKey: ({ device = false } = {}) => request(`/device/comm-key?device=${device}`),
-  setCommKey: (key, writeToDevice = true) =>
-    request(`/device/comm-key`, { method: 'POST', body: JSON.stringify({ key, writeToDevice }) }),
 
   // system (installed Windows app + connection wizard)
   systemInfo: () => request(`/system/info`),

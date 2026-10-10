@@ -63,6 +63,26 @@ class BridgeZKDevice {
   writeCommKey(key, { name = null } = {}, _opts = {}) {
     return this.command('setCommKey', { key: normalizeCommKey(key), name });
   }
+
+  /**
+   * The bridge agent runs RealZKDevice on the school LAN, so capabilities are
+   * decided there — reported as unknown until the agent answers. `canWriteUsers:
+   * null` keeps the UI from disabling a button that may well work.
+   */
+  capabilities() {
+    return {
+      source: 'bridge',
+      library: null,
+      libraryVersion: null,
+      installed: true,
+      canFetchAttendance: true,
+      canFetchUsers: true,
+      canClearAttendance: true,
+      canWriteUsers: null,
+      availableMethods: [],
+      note: 'Capabilities are determined by node-zklib on the site agent machine.',
+    };
+  }
 }
 
 module.exports = { BridgeZKDevice };

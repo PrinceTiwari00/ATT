@@ -277,10 +277,7 @@ With `web/dist` present, the API serves the UI on the same port
 |---|---|---|
 | `ETIMEDOUT` / `EHOSTUNREACH` | Wrong IP, different subnet, no route, client isolation | §1.1, §5 ping test |
 | `ECONNREFUSED` | Wrong port, or device needs reboot after config | §1.3, reboot terminal |
-| Connects, then silent on every command (`TIMEOUT_ON_WRITING_MESSAGE`) | The terminal is waiting for a Comm Key ATT does not have, or another client owns the single session | §1.2 — *Device & Sync → Terminal password → Check against terminal*, then close other ZK software |
-| *“the terminal REJECTED Comm Key N”* | ATT has a key, the device has a different one | Read the value on the keypad (`Menu → COMM → Comm Key`) and save it with **“ATT only”**, or write a fresh key from ATT |
-| `ECONNRESET` / *“Another device is connecting to the device so the connection is interrupted”* | Another program (or a second ATT) took the terminal's only session mid-command | Close ZKTime/ZKAccess and any second ATT; set a Comm Key (§1.2) so they are refused instead. ATT's own paths are already serialised by the device lock |
-| `DEVICE_BUSY` / HTTP 409 *“the terminal is busy”* in the UI | Working as designed — another ATT operation holds the session (the banner shows which one and for how long) | Wait a few seconds and retry; the poller skips the cycle and picks up on the next one |
+| Connects, then silent / errors on commands | Comm Key ≠ 0 | §1.2 |
 | `zk.getAttendance is not a function` | Old build calling a method the library never had (`node-zklib` ships the plural `getAttendances`) | Update to ATT 1.0.1 or newer — the adapter now resolves the name the installed library actually exposes |
 | Log pull returns 0 rows | Device memory genuinely empty, or logs were cleared | Enroll & punch on the terminal, then Fetch logs now |
 | `[object Object]` in a device error | Old build stringified `node-zklib`'s `ZKError`, which is not an `Error` (its cause lives in `.err`) | Update to ATT 1.0.1 or newer — errors read e.g. *“IP of the device is refused (ECONNREFUSED)”* |

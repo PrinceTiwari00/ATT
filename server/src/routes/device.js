@@ -12,8 +12,6 @@ const { getDb } = require('../db/connection');
 const { getManager } = require('../zk/manager');
 const { syncOnce } = require('../services/poller');
 const { adoptAndRecompute } = require('../services/processor');
-const commKeyService = require('../services/commKey');
-const { isBusyError } = require('../zk/deviceLock');
 
 const router = express.Router();
 

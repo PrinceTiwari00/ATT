@@ -29,7 +29,6 @@ const { initManager } = require('./zk/manager');
 const { startPoller, stopPoller } = require('./services/poller');
 const { getDb } = require('./db/connection');
 const { acquireInstance, releaseInstance, findLiveInstance, InstanceConflictError } = require('./services/instance');
-const { getDeviceLock } = require('./zk/deviceLock');
 
 /** Roster rows the mock simulator needs (real mode ignores it). */
 function rosterProvider() {
@@ -178,10 +177,6 @@ async function bootServer(opts = {}) {
     if (closed) return;
     closed = true;
     stopPoller();
-    // Nobody may be left waiting on the terminal when the process goes away.
-    try {
-      getDeviceLock().abortWaiters('ATT is shutting down');
-    } catch (_) { /* the lock is best-effort on the way out */ }
     releaseInstance();
     await new Promise((resolve) => server.close(resolve));
     try {
