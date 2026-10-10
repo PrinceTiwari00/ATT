@@ -5,6 +5,7 @@ const express = require('express');
 const { getDb } = require('../db/connection');
 const { getManager } = require('../zk/manager');
 const { recomputeRange, adoptAndRecompute } = require('../services/processor');
+const { todayKey, addDays } = require('../lib/localDate');
 
 /**
  * Something changed the roster (a profile was created, edited or imported).
@@ -173,8 +174,8 @@ router.put('/:id', (req, res) => {
   }
 
   if (data.shift_id !== undefined && data.shift_id !== existing.shift_id) {
-    const today = new Date().toISOString().slice(0, 10);
-    const from = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+    const today = todayKey();
+    const from = addDays(today, -30);
     recomputeRange(from, today); // cheap enough; keeps reports consistent
   }
 
