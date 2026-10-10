@@ -11,7 +11,7 @@
  *  any date/range from the raw ledger at any time.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-const { getDb, tx } = require('../db/connection');
+const { getDb } = require('../db/connection');
 const { evaluateDay } = require('../utils/attendanceLogic');
 const { todayStr } = require('../zk/deviceContract');
 

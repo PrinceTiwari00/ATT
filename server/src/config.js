@@ -17,6 +17,7 @@
 const path = require('path');
 const fs = require('fs');
 const settings = require('./settings');
+const { normalizeCommKey } = require('./zk/commKey');
 
 const root = settings.appRoot();
 
@@ -88,7 +89,7 @@ const config = {
      * handshake — the clean way to stop ZKTime / a second install from
      * stealing the terminal's single management session.
      */
-    commKey: normalizeCommKeyEnv(process.env.ZK_COMM_KEY),
+    commKey: normalizeCommKey(process.env.ZK_COMM_KEY),
     /**
      * Run our own CMD_CONNECT so a keyed terminal is detected and
      * authenticated instead of silently ignoring every command.
@@ -185,6 +186,7 @@ function applySettings(patch = {}) {
     ['device.port', (v) => { config.zk.port = parseInt(v, 10); changed.zk = true; }],
     ['device.timeoutMs', (v) => { config.zk.timeoutMs = parseInt(v, 10); changed.zk = true; }],
     ['device.inPort', (v) => { config.zk.inPort = parseInt(v, 10); changed.zk = true; }],
+    ['device.commKey', (v) => { config.zk.commKey = normalizeCommKey(v); changed.zk = true; }],
     ['poll.enabled', (v) => { config.poll.enabled = v !== false && v !== 'false'; changed.poll = true; }],
     ['poll.intervalMinutes', (v) => { config.poll.intervalMinutes = num(v, config.poll.intervalMinutes); changed.poll = true; }],
     ['desktop.autostart', (v) => { config.desktop.autostart = v === true || v === 'true'; changed.desktop = true; }],

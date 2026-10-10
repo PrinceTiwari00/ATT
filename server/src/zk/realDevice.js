@@ -38,23 +38,8 @@ const {
   ZKDeviceError,
   parseDeviceTime,
 } = require('./deviceContract');
-const { DeviceLock, DeviceBusyError, getDeviceLock, isBusyError } = require('./deviceLock');
+const { DeviceLock, getDeviceLock, isBusyError } = require('./deviceLock');
 const commKeyProto = require('./commKey');
-
-/**
- * The methods we need, in order of preference. Keep this in sync with the
- * probe in test/zkLibraryContract.test.js — it asserts these all resolve on the
- * library that is actually installed, which is the test that catches a rename
- * (for example node-zklib 1.x ships `getAttendances`, never `getAttendance`).
- */
-const ZK_METHODS = {
-  connect: ['createSocket', 'connect'],
-  getUsers: ['getUsers'],
-  getLogs: ['getAttendances', 'getAttendance'],
-  getInfo: ['getInfo'],
-  clearLogs: ['clearAttendanceLog', 'clearAttendance'],
-  writeUser: ['setUser', 'createUser'],
-};
 
 /**
  * The methods we need, in order of preference. Keep this in sync with the
@@ -331,20 +316,18 @@ class RealZKDevice {
   }
 
   /** The locked body of withConnection: one socket, one operation, always closed. */
-  async runSession(op, label, ticket) {
+  async runSession(op, label, _ticket) {
     const ZKLib = loadZkLib();
     const zk = new ZKLib(this.ip, this.port, this.timeoutMs, this.inPort);
-    const connect = resolveMethodOn(zk, 'connect');
-    if (!connect) throw missingMethodError('connect', Object.getPrototypeOf(zk) || zk);
     try {
-      await withTimeout(
-        withoutZlklibBanner(() => connect.fn.call(zk)),
+      const session = await this.openSession(zk);
+      return await withTimeout(
+        Promise.resolve().then(() => op(zk, session)),
         this.timeoutMs,
-        `createSocket ${this.ip}:${this.port}`
+        `${label} ${this.ip}:${this.port}`
       );
     } catch (err) {
-      if (err instanceof ZKConnectionError || err instanceof ZKDeviceError) throw err;
-      if (isBusyError(err)) throw err;
+      if (err instanceof ZKConnectionError || err instanceof ZKDeviceError || isBusyError(err)) throw err;
       throw classifyNetworkError(err, this.ip, this.port);
     } finally {
       await safeDisconnect(zk); // never leak a session on the terminal
@@ -439,7 +422,7 @@ class RealZKDevice {
     return resolved.name;
   }
 
-  async testConnection() {
+  async testConnection(opts = {}) {
     try {
       const { info, session } = await this.withConnection(async (zk, opened) => {
         const out = {};
@@ -482,7 +465,7 @@ class RealZKDevice {
   }
 
   /** Pull enrolled users from the device memory (→ map to teachers). */
-  async getUsers() {
+  async getUsers(opts = {}) {
     this.assertSupports('getUsers');
     const res = await this.withConnection(async (zk) => {
       const method = resolveMethodOn(zk, 'getUsers');
@@ -509,14 +492,14 @@ class RealZKDevice {
    * "zk.getAttendance is not a function" failure on every real-device sync.
    * Resolution goes through ZK_METHODS so either spelling works.
    */
-  async getAttendance() {
+  async getAttendance(opts = {}) {
     const method = this.assertSupports('getLogs');
     const logs = await this.withConnection(async (zk) => {
       const resolved = resolveMethodOn(zk, 'getLogs');
       if (!resolved) throw missingMethodError('getLogs', Object.getPrototypeOf(zk) || zk);
       const raw = await resolved.fn.call(zk);
       return raw && Array.isArray(raw.data) ? raw.data : raw || [];
-    }, method);
+    }, method, opts);
 
     return normalizeAttendanceRecords(logs);
   }
@@ -528,7 +511,7 @@ class RealZKDevice {
    * absent), so this throws an actionable ZKDeviceError unless the installed
    * library actually provides one. Callers should check capabilities() first.
    */
-  async setUser({ userId, name, uid, role = 0, password = '', cardno = 0 }) {
+  async setUser({ userId, name, uid, role = 0, password = '', cardno = 0 }, opts = {}) {
     this.assertSupports('writeUser');
     const numericUid = uid != null ? uid : stableNumericUid(String(userId));
     await this.withConnection(async (zk) => {
@@ -536,12 +519,45 @@ class RealZKDevice {
       if (!method) throw missingMethodError('writeUser', Object.getPrototypeOf(zk) || zk);
       // setUser(uid, userid, name, password, role, cardno)
       return method.fn.call(zk, numericUid, String(userId), name || String(userId), password, role, cardno);
-    }, `setUser ${userId}`);
+    }, `setUser ${userId}`, opts);
     return { ok: true };
   }
 
+  /** Read the Comm Key option on the device (when this firmware exposes it). */
+  async readCommKey(opts = {}) {
+    return this.withConnection(async (zk) => {
+      const result = await commKeyProto.readCommKeyOption(zk);
+      if (!result.supported) {
+        return {
+          ...result,
+          deviceValue: null,
+          configuredKey: this.commKey,
+          matches: null,
+        };
+      }
+      const value = commKeyProto.normalizeCommKey(result.value);
+      return {
+        ...result,
+        value: String(value),
+        deviceValue: String(value),
+        configuredKey: this.commKey,
+        matches: value === this.commKey,
+      };
+    }, 'readCommKey', opts);
+  }
+
+  /** Write the Comm Key option after authenticating with the currently configured key. */
+  async writeCommKey(key, { name = null } = {}, opts = {}) {
+    const value = commKeyProto.normalizeCommKey(key);
+    return this.withConnection(
+      (zk) => commKeyProto.writeCommKeyOption(zk, value, { name }),
+      'writeCommKey',
+      opts
+    );
+  }
+
   /** Danger: wipes the terminal attendance memory. Call only manually. */
-  async clearAttendance() {
+  async clearAttendance(opts = {}) {
     this.assertSupports('clearLogs');
     await this.withConnection(async (zk) => {
       const method = resolveMethodOn(zk, 'clearLogs');

@@ -53,6 +53,7 @@ const FIELDS = [
   { key: 'device.port', env: 'ZK_PORT', type: 'int', min: 1, max: 65535, def: 4370, label: 'Device TCP port' },
   { key: 'device.timeoutMs', env: 'ZK_TIMEOUT_MS', type: 'int', min: 1000, max: 120000, def: 10000, label: 'Device timeout (ms)' },
   { key: 'device.inPort', env: 'ZK_INPORT', type: 'int', min: 1, max: 65535, def: 5200, label: 'UDP reply port' },
+  { key: 'device.commKey', env: 'ZK_COMM_KEY', type: 'int', min: 0, max: 999999, def: 0, secret: true, label: 'Terminal Comm Key' },
 
   // Background poller
   { key: 'poll.enabled', env: 'POLL_ENABLED', type: 'bool', def: true, label: 'Auto-sync enabled' },
@@ -299,18 +300,24 @@ function describeSettings({ maskSecrets = true } = {}) {
 
 /** Field metadata for the UI (labels, ranges, whether a value is secret). */
 function describeSchema() {
-  return FIELDS.map((f) => ({
-    key: f.key,
-    env: f.env,
-    type: f.type,
-    label: f.label,
-    values: f.values,
-    min: f.min,
-    max: f.max,
-    default: f.def,
-    secret: Boolean(f.secret),
-    persisted: process.env[f.env] === undefined, // env overrides cannot be saved from the UI
-  }));
+  return FIELDS.map((f) => {
+    const environmentOverride = process.env[f.env] !== undefined && !ownedEnv.has(f.env);
+    const environmentLocked = environmentOverride && !isInstalledRuntime();
+    return {
+      key: f.key,
+      env: f.env,
+      type: f.type,
+      label: f.label,
+      values: f.values,
+      min: f.min,
+      max: f.max,
+      default: f.def,
+      secret: Boolean(f.secret),
+      persisted: !environmentLocked,
+      editable: !environmentLocked,
+      environmentOverride,
+    };
+  });
 }
 
 /** Accept either {'device.ip': x} or {device:{ip:x}} — normalise to dotted keys. */

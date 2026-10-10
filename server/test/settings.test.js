@@ -10,6 +10,7 @@ const path = require('node:path');
 process.env.ATT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'att-settings-'));
 delete process.env.ZK_IP; // this test owns the device IP
 delete process.env.POLL_INTERVAL_MINUTES;
+delete process.env.ZK_COMM_KEY; // this test owns the terminal password setting
 
 const settings = require('../src/settings');
 
@@ -54,6 +55,22 @@ test('describeSettings reflects env > file > defaults and masks secrets', () => 
   assert.equal(settings.describeSettings({ maskSecrets: false }).security?.appPassword, undefined);
   // …but the masked view still exposes the (empty) field for the UI
   assert.equal(settings.describeSettings().security.appPassword, '');
+});
+
+test('Comm Key is secret and store-owned values remain editable', () => {
+  const keyField = () => settings.describeSchema().find((f) => f.key === 'device.commKey');
+
+  process.env.ZK_COMM_KEY = '77'; // external configuration owns this value
+  assert.equal(keyField().editable, false);
+  assert.equal(keyField().environmentOverride, true);
+  delete process.env.ZK_COMM_KEY;
+
+  settings.saveSettings({ 'device.commKey': '1234' });
+  assert.equal(settings.describeSettings().device.commKey, settings.MASK);
+  assert.equal(settings.describeSettings({ maskSecrets: false }).device.commKey, 1234);
+  assert.equal(keyField().editable, true);
+  assert.equal(keyField().persisted, true);
+  assert.equal(keyField().environmentOverride, false);
 });
 
 test('rejects invalid values without writing them', () => {

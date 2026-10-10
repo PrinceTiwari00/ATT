@@ -27,9 +27,8 @@ const { MockZKDevice } = require('./mockDevice');
 const { BridgeZKDevice } = require('./bridgeDevice');
 const { getAgentStatus } = require('../services/deviceBridge');
 const { ZKConnectionError, ZKDeviceError } = require('./deviceContract');
-const { getDeviceLock, isBusyError, tuneDeviceLock } = require('./deviceLock');
+const { isBusyError, tuneDeviceLock } = require('./deviceLock');
 const settings = require('../settings');
-const { normalizeCommKey } = require('./commKey');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -48,6 +47,7 @@ class ZKManager {
    */
   constructor(rosterProvider) {
     this.rosterProvider = rosterProvider;
+    this.lock = tuneDeviceLock(config.zk.lock);
     this.device = ZKManager.buildDevice(config.zk, rosterProvider);
 
     this.consecutiveFailures = 0;
@@ -84,6 +84,7 @@ class ZKManager {
     // operation already holds a reference to the previous adapter and finishes
     // with it, while every later operation uses the new target.
     const busySyncInFlight = this.busy;
+    this.lock = tuneDeviceLock(config.zk.lock);
     this.device = ZKManager.buildDevice(config.zk, this.rosterProvider);
     this.consecutiveFailures = 0;
     this.circuit = 'closed';
@@ -101,26 +102,37 @@ class ZKManager {
     };
   }
 
-  /** Wrap a device operation with retry + circuit-breaker bookkeeping. */
-  async call(opName, fn, { retries = config.retry.attempts } = {}) {
+  /** Wrap a device operation with retry, circuit-breaker and session-lock bookkeeping. */
+  async call(opName, fn, opts = {}) {
+    const {
+      retries = config.retry.attempts,
+      ticket = null,
+      timeoutMs,
+      lockTimeoutMs = timeoutMs,
+      origin = 'manager',
+    } = opts;
     this.assertCircuit();
 
+    // Keep one adapter for all retries even if settings are changed while the
+    // current operation is still running.
+    const device = this.device;
+    const attempts = Math.max(1, Number(retries) || 1);
     const attemptLoop = async (heldTicket) => {
       let attempt = 0;
       let lastErr = null;
-      while (attempt < retries) {
+      while (attempt < attempts) {
         attempt++;
         try {
-          const result = await fn(this.device, { ticket: heldTicket, origin });
+          const result = await fn(device, { ticket: heldTicket, origin });
           this.onSuccess();
           return result;
         } catch (err) {
           lastErr = err;
           // "Terminal busy" is our own lock talking — retrying would only
           // queue behind ourselves.
-          if (isBusyError(err) || !(err instanceof ZKConnectionError) || attempt >= retries) break;
+          if (isBusyError(err) || !(err instanceof ZKConnectionError) || attempt >= attempts) break;
           const delay = config.retry.baseDelayMs * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
-          console.warn(`[zk] ${opName} failed (attempt ${attempt}/${retries}): ${err.message} — retrying in ${delay}ms`);
+          console.warn(`[zk] ${opName} failed (attempt ${attempt}/${attempts}): ${err.message} — retrying in ${delay}ms`);
           await sleep(delay);
         }
       }
@@ -128,12 +140,13 @@ class ZKManager {
       throw lastErr;
     };
 
-    // Already inside a locked batch (push-all, comm-key change): reuse it.
+    // Already inside a locked batch (push-all, Comm Key change): reuse its ticket.
     if (ticket && this.lock.owns(ticket)) return attemptLoop(ticket);
 
     return this.lock.runExclusive(opName, attemptLoop, {
       timeoutMs: lockTimeoutMs != null ? lockTimeoutMs : config.zk.lock.waitMs,
       origin,
+      ticket,
     });
   }
 
@@ -147,6 +160,17 @@ class ZKManager {
       timeoutMs: timeoutMs != null ? timeoutMs : config.zk.lock.waitMs,
       origin,
     });
+  }
+
+  isBusy() {
+    return this.lock.status().locked;
+  }
+
+  busyReason() {
+    const { owner, cooldownRemainingMs } = this.lock.status();
+    if (owner) return owner.label;
+    if (cooldownRemainingMs > 0) return `previous device session closing (${cooldownRemainingMs}ms cool-down)`;
+    return 'terminal is idle';
   }
 
   assertCircuit() {
@@ -231,7 +255,10 @@ class ZKManager {
     let source = 'default';
     try {
       const stored = settings.readRaw();
-      if (stored && stored.device && stored.device.commKey !== undefined) source = 'settings-file';
+      const field = settings.describeSchema().find((f) => f.key === 'device.commKey');
+      const environmentOwnsValue = field?.environmentOverride === true;
+      if (environmentOwnsValue) source = 'environment';
+      else if (stored && stored.device && stored.device.commKey !== undefined) source = 'settings-file';
       else if (process.env.ZK_COMM_KEY !== undefined) source = 'environment';
     } catch (_) { /* status must never throw */ }
     // Two different questions, often confused:
@@ -271,24 +298,6 @@ class ZKManager {
     return { source: this.mode, canWriteUsers: null };
   }
 
-  /**
-   * What the active adapter can really do. `canWriteUsers === false` means the
-   * connected library has no user-enrollment API (node-zklib 1.x) — the UI
-   * disables "push to device" and explains the terminal-side workaround instead
-   * of failing after the click. `null` = unknown (bridge mode).
-   */
-  capabilities() {
-    const device = this.device;
-    if (device && typeof device.capabilities === 'function') {
-      try {
-        return device.capabilities();
-      } catch (err) {
-        return { source: this.mode, error: err.message, canWriteUsers: null };
-      }
-    }
-    return { source: this.mode, canWriteUsers: null };
-  }
-
   status() {
     return {
       mode: this.mode,
@@ -297,7 +306,11 @@ class ZKManager {
       consecutiveFailures: this.consecutiveFailures,
       nextProbeAt: this.circuit === 'open' ? new Date(this.nextAttemptAt).toISOString() : null,
       pollIntervalMinutes: config.poll.intervalMinutes,
+      busy: this.busy || this.isBusy(),
+      busyReason: this.busyReason(),
       pollerBusy: this.busy,
+      deviceLock: this.lock.status(),
+      commKey: this.commKeyStatus(),
       reconfiguredAt: this.reconfiguredAt,
       bridge: this.mode === 'bridge' ? getAgentStatus() : null,
       capabilities: this.capabilities(),
