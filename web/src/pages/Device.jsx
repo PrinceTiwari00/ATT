@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   Wifi, WifiOff, RefreshCw, Zap, CloudDownload, CloudUpload, Users,
   Fingerprint, Activity, Database, AlertTriangle, Server, CheckCircle2, Radar, Lock, Unlock,
+  KeyRound, ShieldCheck,
 } from 'lucide-react';
 import { api, fmtTime } from '../api/client';
 import Modal from '../components/Modal';
