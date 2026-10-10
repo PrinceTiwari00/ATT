@@ -38,12 +38,8 @@ class ZKManager {
    * @param {() => Array} rosterProvider returns teacher/shift rows for the mock sim
    */
   constructor(rosterProvider) {
-    this.device =
-      config.zk.mode === 'real'
-        ? new RealZKDevice(config.zk)
-        : config.zk.mode === 'bridge'
-          ? new BridgeZKDevice(config.zk)
-          : new MockZKDevice(config.zk, rosterProvider);
+    this.rosterProvider = rosterProvider;
+    this.device = ZKManager.buildDevice(config.zk, rosterProvider);
 
     this.consecutiveFailures = 0;
     this.circuit = 'closed'; // closed | open | half-open
@@ -54,10 +50,46 @@ class ZKManager {
     this.lastSyncResult = null; // { ok, fetched, inserted, processedDays, durationMs, error? }
     this.lastError = null;
     this.busy = false; // poller re-entrancy guard
+    this.reconfiguredAt = null;
+  }
+
+  /** Adapter factory — also used by reconfigure() so modes can change at runtime. */
+  static buildDevice(zkConfig, rosterProvider) {
+    if (zkConfig.mode === 'bridge') return new BridgeZKDevice(zkConfig);
+    if (zkConfig.mode === 'mock') return new MockZKDevice(zkConfig, rosterProvider);
+    return new RealZKDevice(zkConfig);
   }
 
   get mode() {
     return this.device.mode;
+  }
+
+  /**
+   * Swap the device adapter at runtime (the Connect wizard saves a new IP/port
+   * or mode). `config.zk` has already been updated in place by
+   * config.applySettings(); we only rebuild the adapter and clear breaker state
+   * so the new target gets a fair first attempt.
+   */
+  reconfigure(reason = 'settings') {
+    // Swapping the adapter is safe even while a sync is in flight: the running
+    // operation already holds a reference to the previous adapter and finishes
+    // with it, while every later operation uses the new target.
+    const busySyncInFlight = this.busy;
+    this.device = ZKManager.buildDevice(config.zk, this.rosterProvider);
+    this.consecutiveFailures = 0;
+    this.circuit = 'closed';
+    this.openedAt = null;
+    this.nextAttemptAt = 0;
+    this.lastError = null;
+    this.reconfiguredAt = new Date().toISOString();
+    console.log(`[zk] device link reconfigured (${reason}) → ${this.mode} @ ${config.zk.ip}:${config.zk.port}`);
+    return {
+      ok: true,
+      mode: this.mode,
+      target: { ip: config.zk.ip, port: config.zk.port },
+      busySyncInFlight,
+      at: this.reconfiguredAt,
+    };
   }
 
   /** Wrap a device operation with retry + circuit-breaker bookkeeping. */
@@ -150,6 +182,24 @@ class ZKManager {
     return this.call(`setUser(${payload.userId})`, (d) => d.setUser(payload));
   }
 
+  /**
+   * What the active adapter can really do. `canWriteUsers === false` means the
+   * connected library has no user-enrollment API (node-zklib 1.x) — the UI
+   * disables "push to device" and explains the terminal-side workaround instead
+   * of failing after the click. `null` = unknown (bridge mode).
+   */
+  capabilities() {
+    const device = this.device;
+    if (device && typeof device.capabilities === 'function') {
+      try {
+        return device.capabilities();
+      } catch (err) {
+        return { source: this.mode, error: err.message, canWriteUsers: null };
+      }
+    }
+    return { source: this.mode, canWriteUsers: null };
+  }
+
   status() {
     return {
       mode: this.mode,
@@ -159,7 +209,9 @@ class ZKManager {
       nextProbeAt: this.circuit === 'open' ? new Date(this.nextAttemptAt).toISOString() : null,
       pollIntervalMinutes: config.poll.intervalMinutes,
       pollerBusy: this.busy,
+      reconfiguredAt: this.reconfiguredAt,
       bridge: this.mode === 'bridge' ? getAgentStatus() : null,
+      capabilities: this.capabilities(),
       lastSyncAt: this.lastSyncAt,
       lastSyncResult: this.lastSyncResult,
       lastError: this.lastError,
@@ -179,4 +231,23 @@ function getManager() {
   return manager;
 }
 
-module.exports = { initManager, getManager, ZKManager, ZKDeviceError };
+/**
+ * Handshake with an ARBITRARY terminal without touching the configured link —
+ * used by the Connect wizard ("test before you save") and by LAN discovery to
+ * confirm that an open :4370 host really is a ZKTeco device.
+ */
+async function probeDevice({ ip, port = config.zk.port, timeoutMs = 4000, inPort = config.zk.inPort } = {}) {
+  const device = new RealZKDevice({ ip, port, timeoutMs, inPort });
+  const started = Date.now();
+  try {
+    const result = await device.testConnection();
+    return { ...result, probedIp: ip, probedPort: port, durationMs: Date.now() - started };
+  } catch (err) {
+    return {
+      ok: false, mode: 'real', ip, port, error: err.message,
+      durationMs: Date.now() - started,
+    };
+  }
+}
+
+module.exports = { initManager, getManager, ZKManager, ZKDeviceError, probeDevice };

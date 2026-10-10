@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, CalendarClock, Users, Clock3, Fingerprint, Wifi, WifiOff, Loader2,
+  Radar, Settings2, MonitorSmartphone,
 } from 'lucide-react';
 import { api } from './api/client';
 import Dashboard from './pages/Dashboard';
@@ -9,7 +10,11 @@ import Attendance from './pages/Attendance';
 import Teachers from './pages/Teachers';
 import Shifts from './pages/Shifts';
 import Device from './pages/Device';
+import Connect from './pages/Connect';
+import Settings from './pages/Settings';
 import LoginScreen from './components/LoginScreen';
+
+const desktop = typeof window !== 'undefined' ? window.att : undefined;
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -17,6 +22,8 @@ const NAV = [
   { to: '/teachers', label: 'Teachers & Staff', icon: Users },
   { to: '/shifts', label: 'Shifts', icon: Clock3 },
   { to: '/device', label: 'Device & Sync', icon: Fingerprint },
+  { to: '/connect', label: 'Connect Device', icon: Radar },
+  { to: '/settings', label: 'Settings', icon: Settings2 },
 ];
 
 function useDeviceStatus() {
@@ -71,11 +78,24 @@ const TITLES = {
   '/teachers': ['Teachers & Staff', 'Profiles mapped to ZKTeco enrollment IDs'],
   '/shifts': ['Shifts', 'Schedules & grace periods'],
   '/device': ['Device & Sync', 'ZKTeco link, poller & enrollment'],
+  '/connect': ['Connect Device', 'Point this computer at your ZKTeco terminal'],
+  '/settings': ['Settings', 'Sync schedule, access, backups and the Windows app'],
 };
 
 export default function App() {
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const [title, sub] = TITLES[pathname] || ['ATT', ''];
+
+  // First launch of the installed app → straight into the connection wizard.
+  useEffect(() => {
+    if (!desktop?.info) return;
+    desktop.info().then((i) => {
+      if (i?.app?.firstRun && pathname === '/dashboard') navigate('/connect', { replace: true });
+    }).catch(() => {});
+    const offNav = desktop.onNavigate?.((route) => navigate(route));
+    return () => offNav?.();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 
   // Auth gate — pass-through instantly when the server has no APP_PASSWORD.
@@ -133,7 +153,11 @@ export default function App() {
           <div className="font-semibold text-slate-200">Biometric source</div>
           ZKTeco terminal · TCP 4370
           <br />
-          Poller syncs every minute.
+          Runs locally on this PC — punches never leave the school network.
+          <br />
+          <NavLink to="/connect" className="mt-1 inline-block font-semibold text-indigo-300 hover:text-indigo-200">
+            Connect or diagnose the link →
+          </NavLink>
         </div>
       </aside>
 
@@ -146,6 +170,11 @@ export default function App() {
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden text-[12.5px] font-medium text-slate-500 sm:block">{today}</span>
+            {desktop && (
+              <span className="badge hidden bg-slate-900 text-slate-100 lg:inline-flex" title="Installed ATT desktop app — runs and syncs locally on this computer">
+                <MonitorSmartphone size={12} /> Desktop app
+              </span>
+            )}
             <DevicePill />
           </div>
         </header>
@@ -158,6 +187,8 @@ export default function App() {
             <Route path="/teachers" element={<Teachers />} />
             <Route path="/shifts" element={<Shifts />} />
             <Route path="/device" element={<Device />} />
+            <Route path="/connect" element={<Connect />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </main>

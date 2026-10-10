@@ -1,10 +1,16 @@
 # ATT — ZKTeco·Integrated Attendance Tracking System
 
-A complete web-based attendance tracker for schools: it polls a **ZKTeco
-biometric terminal** over TCP/IP, turns raw fingerprint punches into daily
-check-in / check-out summaries, and flags **late arrivals** and **early
-departures ("fast going")** against configurable shifts — with a live
-dashboard, teacher management, enrollment sync, and CSV reporting.
+A complete attendance tracker for schools: it polls a **ZKTeco biometric
+terminal** over TCP/IP, turns raw fingerprint punches into daily check-in /
+check-out summaries, and flags **late arrivals** and **early departures
+("fast going")** against configurable shifts — with a live dashboard, teacher
+management, enrollment sync, and CSV reporting.
+
+Ships as an **installable Windows application**: one installer puts the sync
+engine, the database and the dashboard on any Windows 10/11 PC, connects that PC
+to the terminal (with a guided wizard that scans your LAN for it), and keeps
+pulling punches in the background — even as a Windows service before anyone
+signs in. See **[docs/WINDOWS_APP.md](docs/WINDOWS_APP.md)**.
 
 **This repository is production-configured by default**: it connects to real
 hardware and never creates fake data. No demo seeding, no simulation — the
@@ -18,8 +24,25 @@ first boot gives you a clean database and a guided 3-step setup.
 | Backend | Node.js 22 · Express 4 |
 | Hardware | `node-zklib` (ZKTeco TCP protocol on port 4370; direct or LAN-bridge mode) |
 | Database | SQLite (`node:sqlite`, zero native deps — swappable for Postgres/MySQL) |
+| Windows app | Electron 44 · electron-builder (NSIS installer) · bundled Node LTS runtime · WinSW background service |
 
 ---
+
+## Windows desktop app (install on any school PC)
+
+1. Grab `ATT-Attendance-Setup-<version>.exe` from
+   [GitHub Releases](https://github.com/PrinceTiwari00/ATT/releases) (built by
+   GitHub Actions on every tag), or build it yourself with
+   `node desktop/scripts/prepare-payload.mjs && npm --prefix desktop run dist:win`.
+2. Install, tick *"run as a background service"* if you want sync before sign-in.
+3. First launch opens the **Connect Device** wizard: it shows this PC's network,
+   **scans the LAN for ZKTeco terminals**, verifies the link step-by-step
+   (subnet → ping → TCP 4370 → handshake, with the exact fix for each failure)
+   and then connects and starts syncing.
+
+Everything is documented in **[docs/WINDOWS_APP.md](docs/WINDOWS_APP.md)** —
+data lives in `C:\ProgramData\ATT`, one backend per PC is enforced by an
+instance lock, and the tray icon shows device status all day.
 
 ## Production setup
 
@@ -43,8 +66,15 @@ npm --prefix server start     # API on :4000 — UI + API on ONE port
 
 First boot auto-migrates an empty database and opens on the guided setup:
 **Shifts → Teachers (Add or Import-from-device) → Device & Sync (Test link,
-push/pull enrollments)**. The poller pulls new punches every
+pull logs, pull/import device users)**. The poller pulls new punches every
 `POLL_INTERVAL_MINUTES` (default 1).
+
+Enrollment flow: `node-zklib` 1.x can read users and logs but has **no API to
+write users**, so people are enrolled on the terminal keypad and pulled in with
+*Fetch device users → Import* (punches already in the ledger are linked and
+their days rebuilt automatically). The Device page detects this and disables
+the push button with the same explanation; if a future library version adds a
+write API, `GET /api/device/status` reports it and the button re-enables.
 
 For development hot-reload instead: `npm run dev` (API :4000 + Vite :5173).
 A systemd unit and reverse-proxy notes are in

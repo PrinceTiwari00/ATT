@@ -1,6 +1,6 @@
 {
   "name": "att-zkteco-attendance",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "ZKTeco-integrated Attendance Tracking System for school teachers & staff",
   "scripts": {
@@ -11,7 +11,12 @@
     "device-agent": "npm --prefix server run agent",
     "seed:demo": "npm --prefix server run seed:demo -- --force",
     "test": "npm --prefix server test",
-    "build": "npm --prefix web run build"
+    "build": "npm --prefix web run build",
+    "app:assets": "node desktop/scripts/make-assets.mjs",
+    "app:payload": "node desktop/scripts/prepare-payload.mjs",
+    "app:dev": "npm --prefix desktop run start",
+    "app:dist": "npm --prefix desktop run dist",
+    "app:dist:win": "npm --prefix desktop run dist:win"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

@@ -152,4 +152,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { execute, validateConfig };
+module.exports = { run, execute, validateConfig };

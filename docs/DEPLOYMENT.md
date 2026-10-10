@@ -4,6 +4,20 @@ ATT can run beside the ZKTeco terminal or in the cloud. The terminal itself
 stays on the private school LAN in both cases; **never expose TCP 4370 to the
 internet**.
 
+## Option 0 (recommended for a single school PC): the Windows desktop app
+
+Install `ATT-Attendance-Setup-<version>.exe` (see
+[WINDOWS_APP.md](WINDOWS_APP.md)) on any Windows 10/11 x64 computer that can
+reach the terminal. The installer bundles the Node runtime, the sync engine and
+the dashboard; a first-run wizard connects the machine to the terminal (with a
+LAN scan and full diagnostics), and an optional Windows service keeps syncing at
+boot, while locked, and when nobody is signed in. Data stays in
+`C:\ProgramData\ATT`; other staff PCs may open `http://<this-pc>:4000`.
+
+This is the same backend as Option 1, packaged: one `server.cjs` bundle, one
+SQLite file, one instance per computer (enforced by
+`<ATT_HOME>/runtime.json`).
+
 ## Option 1 (simplest): run ATT on the school LAN
 
 Use this when an always-on school machine can run the web app and reach the

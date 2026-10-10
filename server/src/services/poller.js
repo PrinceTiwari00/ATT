@@ -15,7 +15,7 @@
 const config = require('../config');
 const { getDb, tx } = require('../db/connection');
 const { getManager } = require('../zk/manager');
-const { recomputeDate } = require('./processor');
+const { recomputeDate, adoptOrphanPunches } = require('./processor');
 const { todayStr } = require('../zk/deviceContract');
 
 let timer = null;
@@ -71,6 +71,13 @@ async function syncOnce(trigger = 'poll') {
       }
     });
 
+    // Rows the previous polls stored before their teacher profile existed are
+    // adopted here, so the days they touch are rebuilt in this same pass. (A
+    // fresh install that synced first and registered staff second would
+    // otherwise leave that history showing "absent" forever.)
+    const adopted = adoptOrphanPunches();
+    for (const day of adopted.dates) affectedDates.add(day);
+
     if (config.poll.alwaysReprocessToday) affectedDates.add(todayStr());
     let processedTeachers = 0;
     for (const dateStr of affectedDates) {
@@ -82,6 +89,7 @@ async function syncOnce(trigger = 'poll') {
       trigger,
       fetched: records.length,
       inserted,
+      adoptedPunches: adopted.linked,
       daysRecomputed: affectedDates.size,
       unknownDeviceIds: [...unknownIds],
       durationMs: Date.now() - started,
@@ -107,17 +115,26 @@ async function syncOnce(trigger = 'poll') {
   }
 }
 
-function startPoller() {
+let startedAt = null;
+let ticks = 0;
+
+function startPoller({ immediate = true } = {}) {
   if (!config.poll.enabled) {
     console.log('[poller] disabled via POLL_ENABLED=false');
-    return;
+    return { running: false, reason: 'disabled' };
   }
+  if (timer) clearInterval(timer);
   const intervalMs = Math.max(10, config.poll.intervalMinutes) * 60 * 1000;
   console.log(`[poller] started — pulling attendance every ${config.poll.intervalMinutes} min`);
+  startedAt = new Date().toISOString();
   // immediate first pull, then fixed interval (unref so it never blocks exit)
-  syncOnce('boot').catch(() => {});
-  timer = setInterval(() => syncOnce('poll').catch(() => {}), intervalMs);
+  if (immediate) syncOnce('boot').catch(() => {});
+  timer = setInterval(() => {
+    ticks++;
+    syncOnce('poll').catch(() => {});
+  }, intervalMs);
   timer.unref();
+  return { running: true, intervalMs };
 }
 
 function stopPoller() {
@@ -125,4 +142,20 @@ function stopPoller() {
   timer = null;
 }
 
-module.exports = { startPoller, stopPoller, syncOnce };
+/** Re-read config.poll and restart the timer (used after a settings change). */
+function restartPoller() {
+  stopPoller();
+  return startPoller({ immediate: config.poll.enabled });
+}
+
+function getPollerState() {
+  return {
+    running: Boolean(timer),
+    enabled: config.poll.enabled,
+    intervalMinutes: config.poll.intervalMinutes,
+    startedAt,
+    ticks,
+  };
+}
+
+module.exports = { startPoller, stopPoller, restartPoller, getPollerState, syncOnce };

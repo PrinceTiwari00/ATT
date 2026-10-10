@@ -1,0 +1,55 @@
+<!--
+  ───────────────────────────────────────────────────────────────────────────
+   ATT background service definition (WinSW v2 · MIT)
+  ───────────────────────────────────────────────────────────────────────────
+   `att-service.exe` (a renamed WinSW wrapper) reads this file from its own
+   folder. It supervises the bundled Node runtime running the same server
+   bundle the desktop app uses, so attendance keeps being pulled from the
+   ZKTeco terminal:
+
+       • before anybody signs in (service starts at boot)
+       • while the office PC is locked
+       • after a crash (auto-restart with backoff)
+
+   Paths are relative to %BASE% (= <install dir>\resources\service) so the
+   service keeps working when the user picks a custom install directory.
+   The server derives everything else (ATT_HOME = %ProgramData%\ATT, database,
+   log files, device settings) from the packaged marker next to server.cjs,
+   so no environment variables are needed here.
+
+   Commands:  att-service.exe install | start | stop | restart | uninstall
+              att-service.exe status | testwait
+   The desktop app and the installer run these for you (with one UAC prompt).
+  ───────────────────────────────────────────────────────────────────────────
+-->
+<service>
+  <id>ATTAttendance</id>
+  <name>ATT Attendance Sync</name>
+  <description>Pulls attendance punches from the ZKTeco biometric terminal and keeps the ATT database, late/early calculations and reports up to date on this computer.</description>
+
+  <executable>%BASE%\..\payload\runtime\node.exe</executable>
+  <arguments>"%BASE%\..\payload\server.cjs" --service</arguments>
+  <workingdirectory>%BASE%\..\payload</workingdirectory>
+
+  <!-- Wrapper log (stdout/stderr of node.exe) next to the uninstaller logs. -->
+  <logpath>%BASE%\..\..\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>30 sec</stoptimeout>
+  <stopparentprocessfirst>false</stopparentprocessfirst>
+  <priority>Normal</priority>
+
+  <!-- Crash recovery: quick retry, then slower, then give up until restart. -->
+  <resetfailure>1 hour</resetfailure>
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <onfailure action="none" />
+
+  <!-- Runs as LocalSystem: it can read Program Files and write %ProgramData%\ATT. -->
+  <interactive>false</interactive>
+</service>

@@ -1,0 +1,249 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  ATT for Windows — build the installable application
+# ─────────────────────────────────────────────────────────────────────────────
+#  Two jobs:
+#
+#    payload  (ubuntu)   proves the SINGLE-FILE backend bundle really boots:
+#                        server tests + a live mock-mode smoke boot of the exact
+#                        server.cjs that ships inside the installer.
+#    windows  (windows)  assembles the payload (Node runtime + WinSW wrapper +
+#                        web build + bundle) and packs the NSIS installer
+#                        ATT-Attendance-Setup-<version>.exe.
+#
+#  Triggers:
+#    • tag push  v*.*.*   → builds the installer AND publishes a GitHub Release
+#    • push to main       → builds the installer as a workflow artifact
+#    • workflow_dispatch  → manual build (choose "publish release")
+# ─────────────────────────────────────────────────────────────────────────────
+name: Windows installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the installer as a GitHub Release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION_FILE: .node-version
+
+jobs:
+  # ── 1. prove the bundled backend works (fast, on Linux) ─────────────────
+  payload:
+    name: Bundle + smoke test (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ${{ env.NODE_VERSION_FILE }}
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix server
+          npm ci --prefix web
+          ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --prefix desktop
+
+      - name: Build the dashboard
+        run: npm run build --prefix web
+
+      - name: Bundle the backend payload
+        run: node desktop/scripts/bundle-server.mjs
+
+      - name: Server unit tests
+        run: npm test --prefix server
+
+      - name: Smoke-boot the bundled payload (mock device)
+        run: |
+          set -euo pipefail
+          ATT_HOME="$RUNNER_TEMP/att" ZK_MODE=mock SEED_DEMO=true PORT=4199 \
+            node desktop/dist/payload/server.cjs --no-poll &
+          SERVER_PID=$!
+          for i in $(seq 1 40); do
+            if curl -sf localhost:4199/api/health >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf localhost:4199/api/health | tee /tmp/health.json
+          grep -q '"ok":true' /tmp/health.json
+          curl -sf localhost:4199/api/system/info | head -c 400
+          curl -sf localhost:4199/api/system/network >/dev/null
+          curl -sf -X POST localhost:4199/api/system/diagnostics \
+            -H 'content-type: application/json' -d '{"ip":"192.168.1.110","ping":false}' >/dev/null
+          kill $SERVER_PID
+          echo "bundled payload boots and serves the system API"
+
+      - name: Doctor report exit code on unreachable device
+        run: |
+          ATT_HOME="$RUNNER_TEMP/att2" ZK_MODE=real ZK_IP=10.255.255.1 \
+            node desktop/dist/payload/server.cjs --doctor --json || echo "doctor correctly reported failure (exit $?)"
+
+  # ── 2. build the Windows installer ──────────────────────────────────────
+  windows:
+    name: Windows installer (x64)
+    runs-on: windows-latest
+    needs: payload
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ${{ env.NODE_VERSION_FILE }}
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix server
+          npm ci --prefix web
+          npm ci --prefix desktop
+        env:
+          # electron-builder downloads the exact win-x64 Electron zip itself.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+      # The dashboard MUST be built here: bundle-server.mjs copies web/dist into
+      # the payload, and this job runs on a different machine than `payload`, so
+      # nothing is inherited. Skipping it fails the build (or ships a blank UI).
+      - name: Build the dashboard
+        run: npm run build --prefix web
+
+      - name: Run server unit tests on Windows
+        run: npm test --prefix server
+
+      # Split into one step per script so a red run names the exact failure
+      # (runner logs live on a blob host that is not always reachable).
+      - name: Payload 1/4 - visual assets (icon.ico, tray icons, favicon)
+        run: node desktop/scripts/make-assets.mjs
+
+      - name: Payload 2/4 - bundle backend (server.cjs + web + packaged.json)
+        run: node desktop/scripts/bundle-server.mjs
+
+      - name: Payload 3/4 - Node runtime (payload/runtime/node.exe)
+        run: node desktop/scripts/fetch-runtime.mjs
+        env:
+          CI: "true"
+
+      - name: Payload 4/4 - WinSW service wrapper (service/att-service.exe)
+        run: node desktop/scripts/fetch-service-wrapper.mjs
+        env:
+          CI: "true"
+
+      - name: Payload manifest + completeness gate
+        run: node desktop/scripts/prepare-payload.mjs --verify-only
+        env:
+          CI: "true"
+
+      - name: Pack the NSIS installer
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          # Tee the output so the failure step below can quote it: runner logs
+          # live on a blob host that is not always reachable, annotations are.
+          npx electron-builder --win --x64 --publish never 2>&1 | Tee-Object -FilePath builder.log
+          exit $LASTEXITCODE
+        env:
+          CI: "true"
+          DEBUG: "electron-builder"
+          # Unsigned build; add a certificate later via WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Installer manifest
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse desktop/release | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: att-windows-installer
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.blockmap
+            desktop/release/latest.yml
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release (tags or manual opt-in)
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-manual-$(date +%Y%m%d-%H%M%S)}"
+          NOTES="## ATT for Windows — installable desktop application
+
+          \`\`\`text
+          ATT-Attendance-Setup-*.exe   per-machine installer (Windows 10/11 x64)
+          \`\`\`
+
+          The installer bundles its own Node.js runtime, the ZKTeco sync engine
+          and the dashboard — nothing else to install on the school PC.
+
+          - Optional background Windows service (keeps syncing at boot / when locked)
+          - Optional LAN firewall rule so other staff PCs can open the dashboard
+          - Attendance data stays in \`C:\\ProgramData\\ATT\`
+          "
+          gh release create "$TAG" desktop/release/*.exe \
+            --title "ATT for Windows ${TAG}" \
+            --notes "$NOTES"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Must be LAST: `if: failure()` only fires for steps evaluated after the
+      # failure. Emits the real error as check annotations + a step summary,
+      # because the raw job log lives on a blob host that is often unreachable.
+      - name: Diagnose failure (annotations + step summary)
+        if: failure()
+        shell: pwsh
+        run: |
+          $expected = @(
+            'web/dist/index.html',
+            'desktop/dist/payload/server.cjs',
+            'desktop/dist/payload/packaged.json',
+            'desktop/dist/payload/web/index.html',
+            'desktop/dist/payload/runtime/node.exe',
+            'desktop/service/att-service.exe',
+            'desktop/service/att-service.xml',
+            'desktop/build/icon.ico',
+            'desktop/build/installer.nsh',
+            'desktop/release'
+          )
+          $missing = @($expected | Where-Object { -not (Test-Path $_) })
+          if ($missing.Count -gt 0) {
+            Write-Host "::error title=Missing build inputs/outputs::$($missing -join ' | ')"
+          }
+
+          Get-ChildItem -Recurse desktop/dist, desktop/build, desktop/service, desktop/release `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 40 FullName, Length | Format-Table -AutoSize | Out-String | Write-Host
+
+          if (Test-Path desktop/builder.log) {
+            $lines = @(Get-Content desktop/builder.log)
+            Write-Host "electron-builder produced $($lines.Count) log lines"
+            $hits = @($lines | Where-Object {
+              $_ -match 'error|Error|ERROR|failed|Failed|cannot|Cannot|ENOTFOUND|ENOENT|404|not found|Unexpected|makensis|Error -'
+            })
+            if ($hits.Count -eq 0) { $hits = @($lines | Select-Object -Last 30) }
+            $i = 0
+            foreach ($h in @($hits | Select-Object -Last 14)) {
+              $t = ($h -replace '[\r\n]+', ' ').Trim()
+              if ($t.Length -gt 500) { $t = $t.Substring(0, 500) }
+              if ($t) { Write-Host "::error title=electron-builder[$i]::$t"; $i++ }
+            }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '### electron-builder output (last 120 lines)'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```text'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($lines | Select-Object -Last 120)
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+          } else {
+            Write-Host "::error title=No builder log::the pack step never produced desktop/builder.log"
+          }
