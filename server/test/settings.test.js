@@ -78,6 +78,43 @@ test('rejects invalid values without writing them', () => {
   assert.equal(settings.describeSettings({ maskSecrets: false }).device.port, before);
 });
 
+test('the Comm Key is stored as a number, exposed in the schema, and range-checked', () => {
+  // A FOREIGN ZK_COMM_KEY (an operator's env var, never written by the store)
+  // owns the value: the UI must say so instead of failing on Save.
+  process.env.ZK_COMM_KEY = '777';
+  assert.equal(settings.describeSchema().find((f) => f.key === 'device.commKey').editable, false);
+  assert.throws(() => settings.saveSettings({ 'device.commKey': 1 }), /fixed by the ZK_COMM_KEY environment variable/);
+  delete process.env.ZK_COMM_KEY;
+
+  // The keypad gives you digits; the UI may post a string. Normalise.
+  const { saved } = settings.saveSettings({ 'device.commKey': '2468' });
+  assert.equal(saved.device.commKey, 2468);
+  assert.equal(settings.describeSettings({ maskSecrets: false }).device.commKey, 2468);
+  const onDisk = JSON.parse(fs.readFileSync(settings.getPaths().settingsFile, 'utf8'));
+  assert.equal(onDisk.device.commKey, 2468, 'survives a restart');
+  assert.equal(process.env.ZK_COMM_KEY, '2468', 'config reads it from the environment');
+
+  // The Settings page renders this field from the schema.
+  const field = settings.describeSchema().find((f) => f.key === 'device.commKey');
+  assert.ok(field, 'device.commKey is part of the published schema');
+  assert.equal(field.env, 'ZK_COMM_KEY');
+  assert.equal(field.min, 0);
+  assert.equal(field.secret, false, 'operators must be able to read the key back to type it on the keypad');
+  // Saving puts ZK_COMM_KEY into the environment, so `persisted` flips to false
+  // — but the store owns that var, so the field must stay editable. (`editable`
+  // exists precisely because `persisted` alone would grey the input out here.)
+  assert.equal(field.persisted, false);
+  assert.equal(field.editable, true, 'a store-owned env var does not lock the field');
+
+  for (const bad of [-1, 'abc', NaN]) {
+    assert.throws(() => settings.saveSettings({ 'device.commKey': bad }), /device\.commKey/, String(bad));
+  }
+  assert.equal(settings.describeSettings({ maskSecrets: false }).device.commKey, 2468, 'a rejected save changes nothing');
+
+  // 0 is a real value, not "unset": it removes the password.
+  assert.equal(settings.saveSettings({ 'device.commKey': 0 }).saved.device.commKey, 0);
+});
+
 test('a foreign env var locks the setting; store-owned env does not', () => {
   // HOST was never written by the store → it counts as an operator decision.
   process.env.HOST = '192.0.2.7';

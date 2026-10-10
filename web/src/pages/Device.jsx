@@ -460,7 +460,9 @@ function CommKeyCard({ state, busy, checking, onChange, onCheck }) {
             title={busy ? 'The terminal is busy with another ATT operation' : 'Ask the terminal what key it has (one session)'}>
             <RefreshCw size={13} className={checking ? 'animate-spin' : ''} /> {checking ? 'Asking…' : 'Check against terminal'}
           </button>
-          <button className="btn-primary !py-1.5 !text-xs" onClick={onChange}>
+          <button className="btn-primary !py-1.5 !text-xs" onClick={onChange}
+            disabled={state?.savable === false}
+            title={state?.savable === false ? 'ZK_COMM_KEY is set in this host\'s environment — change it there' : 'Change the key ATT uses, and optionally write it to the terminal'}>
             <KeyRound size={13} /> {isSet ? 'Change key' : 'Set a key'}
           </button>
         </div>
@@ -484,6 +486,11 @@ function CommKeyCard({ state, busy, checking, onChange, onCheck }) {
         {state?.source && state.source !== 'default' && (
           <span className="mt-1 block text-[11px] opacity-75">
             saved in {state.source === 'environment' ? 'the ZK_COMM_KEY environment variable' : 'ATT settings'}
+          </span>
+        )}
+        {state?.savable === false && (
+          <span className="mt-1 block text-[11px] opacity-90">
+            Fixed by the <b>ZK_COMM_KEY</b> environment variable on this host — change it there, not in ATT.
           </span>
         )}
 

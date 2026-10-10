@@ -270,11 +270,21 @@ class ZKManager {
       if (stored && stored.device && stored.device.commKey !== undefined) source = 'settings-file';
       else if (process.env.ZK_COMM_KEY !== undefined) source = 'environment';
     } catch (_) { /* status must never throw */ }
+    // Two different questions, often confused:
+    //   editable — can the ACTIVE ADAPTER read/write a key on the device?
+    //   savable  — may the UI store a key in settings on THIS host? (a foreign
+    //              ZK_COMM_KEY env var owns the value on cloud/systemd boxes)
+    let savable = true;
+    try {
+      const field = settings.describeSchema().find((f) => f.key === 'device.commKey');
+      savable = field ? field.editable !== false : true;
+    } catch (_) { /* status must never throw */ }
     return {
       configured: config.zk.commKey,
       set: config.zk.commKey !== 0,
       source,
       editable: typeof this.device.readCommKey === 'function',
+      savable,
       mode: this.mode,
     };
   }

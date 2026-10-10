@@ -75,6 +75,9 @@ async function getState({ readDevice = true } = {}) {
     source: state.source,
     mode: state.mode,
     supportedByLibrary: state.editable,
+    // false ⇒ an operator-owned ZK_COMM_KEY env var decides the key on this
+    // host; the UI must not pretend it can save over it.
+    savable: state.savable !== false,
     device: null,
   };
   if (!readDevice || !state.editable) return out;

@@ -98,6 +98,13 @@ time) or 🔴 offline. Right-click → *Sync now*, *Run connection diagnostics*.
 - **Other staff PCs** — open `http://<this-computer>:4000` in any browser when the
   firewall rule is enabled. Set **Settings → Access control → password** before
   exposing the PC beyond the school LAN.
+- **Terminal password (Comm Key)** — Settings → *Terminal password*: the key ATT
+  presents to the device (`Menu → COMM → Comm Key`). Saving there changes what
+  **ATT** uses, live, without a restart; *Check against terminal* asks the device
+  which key it actually has. To write a **new** key to the terminal — with a
+  verification login and automatic rollback — use *Device & Sync → Terminal
+  password → Change key*. Setting a key is how you keep ZKTime and other LAN
+  software from stealing the terminal's single session mid-sync.
 - **Backups** — Settings → *Backup now* snapshots the database into
   `C:\ProgramData\ATT\backups` (last 10 kept). Restoring = stop ATT, copy the
   file back over `attendance.db`, start ATT.
@@ -117,6 +124,22 @@ desktop app, as LocalSystem:
 
 Because the desktop app detects a running service, **only one poller ever runs**
 — the terminal's single management session is never fought over.
+
+Inside that one backend, every path to the hardware (the poller, *Fetch logs
+now*, *Test link*, diagnostics, the LAN scan, teacher push) also passes through
+a single **device session lock**, so ATT cannot collide with itself either: one
+session at a time, with a short cool-down between sessions so the terminal can
+release the socket. A second caller is told *“the terminal is busy”* (HTTP 409,
+named holder + how long it has had the device) instead of interrupting the sync,
+and the poller records that as a **skipped** cycle — not a device failure, so the
+circuit breaker is never tripped by it. A wedged session is force-released after
+`ZK_LOCK_STALE_MS` (2 minutes) so device access can never be lost for good.
+
+The lock is per **process**. That is why one backend per PC matters: two ATT
+installs on two PCs, both polling the same terminal, will still interrupt each
+other — the Comm Key stops *other vendors'* software, not a second ATT that knows
+the key. Point the second PC at the first one's dashboard instead
+(`http://<this-computer>:4000`).
 
 ## 6. Where everything lives
 
@@ -183,4 +206,7 @@ electron-builder will sign the installer and the app.
 | Dashboard fine but *Device Offline* | Connect Device → Diagnostics; most causes are listed in [HARDWARE_SETUP.md §5](HARDWARE_SETUP.md) |
 | Another PC cannot open `http://<this-pc>:4000` | Re-run the installer and tick the firewall checkbox, or add the rule manually: `netsh advfirewall firewall add rule name="ATT Attendance" dir=in action=allow protocol=TCP localport=4000 profile=private,domain` |
 | `C:\ProgramData\ATT` is read-only for a user | `icacls "C:\ProgramData\ATT" /grant *S-1-5-32-545:(OI)(CI)M /T` (the installer does this) |
-| Everything was fine, now timeouts | Another ZK software took the terminal's single session — close it; the circuit breaker recovers on its own |
+| Everything was fine, now timeouts | Another ZK software took the terminal's single session — close it, or set a Comm Key (Settings → *Terminal password*) so it is refused at the handshake; the circuit breaker recovers on its own |
+| Connects, then every command times out (`TIMEOUT_ON_WRITING_MESSAGE`) | The device has a Comm Key ATT does not know. Read it on the keypad (`Menu → COMM → Comm Key`) and save the same number in Settings → *Terminal password* (or use *“ATT only”* in Device & Sync) |
+| *“the terminal is busy”* / a 409 in the UI | Working as designed — another ATT operation holds the session. The banner names it; wait a few seconds. If it never clears, the stale-holder watchdog releases it within 2 minutes, or restart the engine (Settings → *Restart engine*) |
+| Settings → Terminal password input is greyed out | A `ZK_COMM_KEY` environment variable owns the value on this host. Change it in the system environment (or the service's), not in the UI |

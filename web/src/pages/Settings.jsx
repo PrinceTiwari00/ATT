@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Save, Loader2, Database, FolderOpen, FileText, RefreshCw, HardDriveDownload,
-  MonitorCog, Power, ShieldCheck, Trash2, RotateCcw, Info,
+  MonitorCog, Power, ShieldCheck, Trash2, RotateCcw, Info, KeyRound, ShieldAlert,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useToast } from '../components/Toast';
@@ -64,6 +65,12 @@ export default function Settings() {
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
 
+  // Terminal password (Comm Key) — what ATT presents to the device.
+  const [keyState, setKeyState] = useState(null);
+  const [keyValue, setKeyValue] = useState('');
+  const [savingKey, setSavingKey] = useState(false);
+  const [checkingKey, setCheckingKey] = useState(false);
+
   const [info, setInfo] = useState(null);
   const [shell, setShell] = useState(null); // desktop shell info (window.att)
   const [autostart, setAutostart] = useState(false);
@@ -86,6 +93,11 @@ export default function Settings() {
         mode: r.data.settings.device?.mode,
       });
     }).catch((e) => toast.error(e.message));
+    // Settings-only: reading the key must never open a session on the terminal.
+    api.commKey().then((r) => {
+      setKeyState(r.data);
+      setKeyValue((v) => (v === '' ? String(r.data?.configured ?? 0) : v));
+    }).catch(() => {});
     api.systemInfo().then((r) => setInfo(r.data)).catch(() => {});
     api.backups().then((r) => setBackups(r.data)).catch(() => {});
     if (isDesktop) {
@@ -122,6 +134,58 @@ export default function Settings() {
       toast.error(e.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  /**
+   * Save the key ATT uses. This deliberately does NOT touch the terminal — the
+   * verified write-and-rollback flow lives on the Device page, because changing
+   * a device password is not something a settings form should do as a side
+   * effect of "Save".
+   */
+  const saveCommKey = async () => {
+    const numeric = Number(String(keyValue).trim());
+    if (!Number.isFinite(numeric) || Math.trunc(numeric) !== numeric || numeric < 0) {
+      return toast.error('The Comm Key must be a whole number (0 or more)');
+    }
+    if (numeric > 999999) return toast.error('Use at most 6 digits — you may have to type it on the keypad one day');
+    setSavingKey(true);
+    try {
+      const r = await api.saveSettings({ 'device.commKey': numeric });
+      setSettings(r.data.settings);
+      setKeyState((k) => ({ ...(k || {}), configured: numeric, set: numeric !== 0, source: 'settings-file', device: null }));
+      toast.success(
+        numeric === 0
+          ? 'Saved — ATT now connects without a password (the terminal is open to any program on the LAN)'
+          : `Saved — ATT now connects with Comm Key ${numeric} (applied live, no restart)`
+      );
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingKey(false);
+    }
+  };
+
+  /** One real session: ask the terminal which key it actually has. */
+  const checkCommKey = async () => {
+    setCheckingKey(true);
+    try {
+      const r = await api.commKey({ device: true });
+      setKeyState(r.data);
+      const d = r.data.device;
+      if (d?.supported) {
+        d.matches
+          ? toast.success(`Terminal reports Comm Key ${d.deviceValue} — matches ATT`)
+          : toast.error(`Terminal reports Comm Key ${d.deviceValue} but ATT is using ${r.data.configured}`);
+      } else if (d?.ok === false) {
+        toast.warning(d.error);
+      } else {
+        toast.warning('This firmware does not report its Comm Key over the network');
+      }
+    } catch (e) {
+      e.status === 409 ? toast.warning(e.message) : toast.error(e.message);
+    } finally {
+      setCheckingKey(false);
     }
   };
 
@@ -197,6 +261,15 @@ export default function Settings() {
 
   const field = (key) => schema.find((f) => f.key === key);
 
+  const keyField = field('device.commKey');
+  // Locked only when an operator-owned ZK_COMM_KEY env var decides the key on
+  // this host (cloud/systemd). The store's own env var does NOT lock it — that
+  // is what `editable`/`savable` say, and why `persisted` is not used here.
+  const keyLocked = keyState?.savable === false || (keyField ? keyField.editable === false : false);
+  const keyConfigured = Number(keyState?.configured ?? settings?.device?.commKey ?? 0);
+  const keyIsSet = keyConfigured !== 0;
+  const deviceReading = keyState?.device && keyState.device.supported ? keyState.device : null;
+
   return (
     <div className="anim-in mx-auto grid max-w-4xl grid-cols-1 gap-4">
       {/* ── sync engine ─────────────────────────────── */}
@@ -239,6 +312,84 @@ export default function Settings() {
           Device address and port are edited in <b>Connect Device</b>. Settings are stored in{' '}
           <span className="font-mono">{info?.paths?.settingsFile || 'config.json'}</span>.
         </p>
+      </Card>
+
+      {/* ── terminal password ───────────────────────── */}
+      <Card
+        title="Terminal password (Comm Key)"
+        subtitle="What ATT presents to the ZKTeco terminal — the device's Menu → COMM → Comm Key."
+        icon={KeyRound}
+        right={
+          <button className="btn btn-primary" onClick={saveCommKey} disabled={savingKey || keyLocked}>
+            {savingKey ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} Save
+          </button>
+        }
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`badge ${keyIsSet ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+            {keyIsSet ? `Comm Key ${keyConfigured} in use` : 'no key (0) — terminal answers any program'}
+          </span>
+          {deviceReading && (
+            <span className={`badge ${deviceReading.matches ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+              {deviceReading.matches ? `terminal agrees (${deviceReading.deviceValue})` : `terminal has ${deviceReading.deviceValue} — MISMATCH`}
+            </span>
+          )}
+          <button className="btn btn-ghost" onClick={checkCommKey} disabled={checkingKey || keyLocked === 'busy'}
+            title="Opens one session on the terminal to read the key it has">
+            <RefreshCw size={15} className={checkingKey ? 'animate-spin' : ''} />
+            {checkingKey ? 'Asking the terminal…' : 'Check against terminal'}
+          </button>
+          <Link className="btn btn-ghost" to="/device">
+            <KeyRound size={15} /> Change it on the terminal…
+          </Link>
+        </div>
+
+        <label className="block sm:max-w-xs">
+          <span className="mb-1 block text-[11.5px] font-semibold uppercase tracking-wide text-slate-500">
+            Comm Key {keyField ? `(${keyField.min}–999999)` : ''}
+          </span>
+          <input
+            type="number" min="0" max="999999" step="1" className="input font-mono"
+            value={keyValue}
+            disabled={Boolean(keyLocked)}
+            onChange={(e) => setKeyValue(e.target.value)}
+            placeholder="0"
+          />
+        </label>
+
+        {keyLocked && (
+          <p className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[12px] text-slate-600">
+            <Info size={14} className="mt-0.5 shrink-0" />
+            Fixed by the <span className="font-mono">ZK_COMM_KEY</span> environment variable on this host — change it
+            there (or in the Windows service's environment) instead of in the UI.
+          </p>
+        )}
+
+        {keyState?.device?.ok === false && (
+          <p className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-[12px] leading-snug text-rose-700">
+            <ShieldAlert size={14} className="mt-0.5 shrink-0" />
+            <span>
+              <b>Could not read the terminal:</b> {keyState.device.error}
+              {keyState.device.hint ? <span className="mt-1 block text-[11.5px]">{keyState.device.hint}</span> : null}
+            </span>
+          </p>
+        )}
+
+        <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 text-[11.5px] leading-relaxed text-slate-600">
+          <b>What this does:</b> changes the key <b>ATT</b> uses, live — no restart. It does <b>not</b> write anything to
+          the device. If the two sides disagree, every command is refused
+          (<span className="font-mono">TIMEOUT_ON_WRITING_MESSAGE</span>), so use <b>Check against terminal</b> after a
+          keypad change, or <Link to="/device" className="font-semibold text-indigo-600 underline">Device &amp; Sync →
+          Terminal password</Link> to write a new key to the device — that flow verifies the new key by logging in again
+          and rolls the terminal back if it fails.
+          <br />
+          <b>Why set one:</b> the terminal serves a single management session. With <span className="font-mono">0</span>,
+          ZKTime or a second ATT install can take that session and interrupt a sync
+          (<span className="font-mono">ECONNRESET</span> / “Another device is connecting…”). With a key, they are refused
+          at the handshake instead. ATT's own operations are already serialised — one session at a time — and a caller
+          that finds the device in use is told <span className="font-mono">the terminal is busy</span> rather than
+          colliding with the sync in progress.
+        </div>
       </Card>
 
       {/* ── access ──────────────────────────────────── */}

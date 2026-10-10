@@ -105,6 +105,43 @@ test('PUT /api/system/settings validates (422) and never half-writes', async () 
   assert.match(body.error, /65535/);
 });
 
+test('PUT /api/system/settings changes the Comm Key live, without a restart', async () => {
+  await settleDevice();
+  const res = await fetch(`${base}/api/system/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ 'device.commKey': 2468 }),
+  });
+  assert.equal(res.status, 200);
+  const { data } = await json(res);
+  assert.equal(data.saved.device.commKey, 2468);
+  assert.equal(data.changed.zk, true, 'a new key must reconfigure the device link');
+  assert.equal(data.requiresRestart, false);
+  assert.ok(data.actions.some((a) => a.action === 'device-reconfigured' && a.ok));
+
+  // What the Settings page reads back (settings-only — no session opened).
+  const state = await json(await fetch(`${base}/api/device/comm-key?device=false`));
+  assert.equal(state.data.configured, 2468);
+  assert.equal(state.data.set, true);
+  assert.equal(state.data.source, 'settings-file');
+  assert.equal(state.data.device, null);
+
+  // And the manager really swapped the adapter it will use for the next sync.
+  const status = await json(await fetch(`${base}/api/device/status`));
+  assert.equal(status.data.commKey.configured, 2468);
+  assert.equal(status.data.commKey.editable, true);
+
+  // Leave the link exactly as it was: the simulator has no key, and a mismatch
+  // would make every later device call in this file fail for the wrong reason.
+  const restore = await fetch(`${base}/api/system/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ 'device.commKey': 0 }),
+  });
+  assert.equal(restore.status, 200);
+  assert.equal((await json(await fetch(`${base}/api/device/comm-key?device=false`))).data.configured, 0);
+});
+
 test('POST /api/system/device/probe handshakes without saving anything', async () => {
   await settleDevice();
   const res = await fetch(`${base}/api/system/device/probe`, {

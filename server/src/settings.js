@@ -316,6 +316,13 @@ function describeSchema() {
     default: f.def,
     secret: Boolean(f.secret),
     persisted: process.env[f.env] === undefined, // env overrides cannot be saved from the UI
+    /* Can the UI actually save this? `persisted` alone is misleading: hydrate
+       and saveSettings both put store-owned values INTO the environment, so a
+       perfectly editable field reads `persisted:false` after the first save.
+       Only a FOREIGN env var (an operator's decision on a cloud/systemd host)
+       locks a field — and never on the installed Windows app, which owns its
+       own environment. Mirrors the `locked` check in saveSettings(). */
+    editable: isInstalledRuntime() || process.env[f.env] === undefined || ownedEnv.has(f.env),
   }));
 }
 
