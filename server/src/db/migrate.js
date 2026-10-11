@@ -88,6 +88,37 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    id: 2,
+    name: 'work-calendar',
+    sql: `
+      CREATE TABLE calendar_settings (
+        id           INTEGER PRIMARY KEY CHECK (id = 1),
+        working_days TEXT NOT NULL DEFAULT '[1,2,3,4,5]',
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+      );
+      INSERT INTO calendar_settings (id, working_days)
+        VALUES (1, '[1,2,3,4,5]');
+
+      CREATE TABLE calendar_holidays (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        name      TEXT NOT NULL,
+        kind      TEXT NOT NULL CHECK (kind IN ('once', 'annual')),
+        date      TEXT,
+        bs_month  INTEGER,
+        bs_day    INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        CHECK (
+          (kind = 'once' AND date IS NOT NULL AND bs_month IS NULL AND bs_day IS NULL) OR
+          (kind = 'annual' AND date IS NULL AND bs_month BETWEEN 1 AND 12 AND bs_day BETWEEN 1 AND 32)
+        )
+      );
+      CREATE UNIQUE INDEX idx_calendar_holiday_once
+        ON calendar_holidays(date) WHERE kind = 'once';
+      CREATE UNIQUE INDEX idx_calendar_holiday_annual
+        ON calendar_holidays(bs_month, bs_day) WHERE kind = 'annual';
+    `,
+  },
 ];
 
 function migrate() {

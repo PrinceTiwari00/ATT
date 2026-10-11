@@ -76,6 +76,12 @@ sequenceDiagram
 
 ## 4. Data model (spec § 3)
 
+The attendance ledger remains keyed by Gregorian local dates for compatibility
+with the ZKTeco terminal. BS conversion is applied in the web/report layer. The
+school work calendar is persisted separately in `calendar_settings` (weekly
+working weekdays) and `calendar_holidays` (one-off Gregorian dates or recurring
+BS month/day definitions); non-working dates never generate absences.
+
 ```mermaid
 erDiagram
     SHIFTS ||--o{ TEACHERS : assigned

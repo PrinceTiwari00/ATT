@@ -1,4 +1,5 @@
 /** Tiny fetch wrapper around the backend REST API (same-origin, proxied). */
+import { formatDatePair } from '../lib/nepaliDate.js';
 
 const TOKEN_KEY = 'att_token';
 
@@ -85,6 +86,18 @@ export const api = {
   updateShift: (id, data) => request(`/shifts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteShift: (id) => request(`/shifts/${id}`, { method: 'DELETE' }),
 
+  // school calendar
+  calendar: () => request(`/calendar`),
+  saveWorkingDays: (workingDays) => request(`/calendar/workdays`, {
+    method: 'PUT', body: JSON.stringify({ workingDays }),
+  }),
+  createHoliday: (data) => request(`/calendar/holidays`, { method: 'POST', body: JSON.stringify(data) }),
+  updateHoliday: (id, data) => request(`/calendar/holidays/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteHoliday: (id) => request(`/calendar/holidays/${id}`, { method: 'DELETE' }),
+
+  // monthly reports
+  monthlyReport: (bsYear, bsMonth) => request(`/reports/monthly?${new URLSearchParams({ bsYear, bsMonth })}`),
+
   // device
   deviceStatus: () => request(`/device/status`),
   deviceTest: () => request(`/device/test`, { method: 'POST' }),
@@ -130,9 +143,9 @@ export function fmtTime(iso) {
   return `${String(h12).padStart(2, '0')}:${mm} ${ampm}`;
 }
 
-export function fmtDate(iso, opts = { weekday: 'short', month: 'short', day: 'numeric' }) {
+export function fmtDate(iso, opts = {}) {
   if (!iso) return '—';
-  return new Date(iso.slice(0, 10) + 'T00:00:00').toLocaleDateString('en-US', opts);
+  return formatDatePair(iso.slice(0, 10), opts);
 }
 
 export function humanizeMinutes(min) {

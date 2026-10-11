@@ -37,6 +37,9 @@ const { addDays } = require('../src/lib/localDate');
 migrate();
 
 const db = getDb();
+// This suite tests punch adoption on whatever weekday the clock lands; make
+// every day a workday so the calendar policy does not affect its assertions.
+db.prepare("UPDATE calendar_settings SET working_days = '[0,1,2,3,4,5,6]' WHERE id = 1").run();
 const TODAY = todayStr();
 // Calendar arithmetic on the local date. Never toISOString() here: in zones
 // east of UTC, local midnight is the previous UTC day and TOMORROW == TODAY.

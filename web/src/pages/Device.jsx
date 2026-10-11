@@ -8,6 +8,7 @@ import {
 import { api, fmtTime } from '../api/client';
 import Modal from '../components/Modal';
 import { useToast } from '../components/Toast';
+import { formatAdDate, formatBsDate } from '../lib/nepaliDate';
 
 export default function Device() {
   const toast = useToast();
@@ -335,7 +336,10 @@ export default function Device() {
               <tbody>
                 {logs.map((l) => (
                   <tr key={l.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                    <td className="td-table font-mono text-[12.5px] tabular-nums">{l.punch_time.replace('T', ' ')}</td>
+                    <td className="td-table tabular-nums">
+                      <div className="font-medium text-slate-800">{formatBsDate(l.punch_time.slice(0, 10))} BS</div>
+                      <div className="text-[11px] text-slate-400">{formatAdDate(l.punch_time.slice(0, 10))} AD · {fmtTime(l.punch_time)}</div>
+                    </td>
                     <td className="td-table"><span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[11px] text-emerald-300">#{l.zk_user_id}</span></td>
                     <td className="td-table">{l.full_name || <span className="italic text-amber-600">unmatched</span>}</td>
                     <td className="td-table text-slate-400">{l.source}</td>

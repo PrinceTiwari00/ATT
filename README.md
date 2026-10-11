@@ -24,6 +24,7 @@ first boot gives you a clean database and a guided 3-step setup.
 | Backend | Node.js 22 · Express 4 |
 | Hardware | `node-zklib` (ZKTeco TCP protocol on port 4370; direct or LAN-bridge mode) |
 | Database | SQLite (`node:sqlite`, zero native deps — swappable for Postgres/MySQL) |
+| Nepal calendar | Bikram Sambat (BS) conversion with Gregorian dates retained for device records |
 | Windows app | Electron 44 · electron-builder (NSIS installer) · bundled Node LTS runtime · WinSW background service |
 
 ---
@@ -110,6 +111,21 @@ are flagged **OPEN**. Overnight shifts (end ≤ start) roll to the next day.
 The raw punch ledger is never modified or wiped — reports are always
 rebuildable (`POST /api/attendance/recompute`).
 
+## Monthly reports and the Nepal school calendar
+
+ATT displays dates in **Bikram Sambat (BS)** alongside Gregorian (AD) dates;
+ZKTeco punch timestamps and database keys remain Gregorian internally. The
+**Monthly Reports** page selects a BS month and totals each staff member's
+present/absent workdays, late arrivals and minutes, early departures and
+minutes, and overtime. It also downloads a CSV. Future working days are not
+counted as absences.
+
+**Calendar & Holidays** lets the school set its weekly workdays (new installs
+default to Monday–Friday) and maintain both one-off holidays and holidays that
+repeat on a BS month/day each year. Weekends and named holidays are excluded
+from absence totals. Holiday punches, if any, remain visible separately as
+off-day work.
+
 ## Developing without a device (optional)
 
 A hardware simulator is included strictly for development/demos — it is
@@ -127,6 +143,10 @@ npm run dev
 ```
 GET    /api/dashboard/summary?date=YYYY-MM-DD
 GET    /api/attendance/daily?from&to&q&department&status
+GET    /api/reports/monthly?bsYear&bsMonth            # BS monthly staff totals
+GET    /api/calendar                                 # workweek + holiday definitions
+PUT    /api/calendar/workdays {workingDays:[1,2,3,4,5]}
+POST|PUT|DELETE /api/calendar/holidays[/:id]          # one-off or annual BS holiday
 GET    /api/attendance/logs?date&zk_user_id          # raw punch ledger
 POST   /api/attendance/recompute  {from,to}
 GET|POST/PUT|DELETE /api/teachers[/:id]
@@ -153,3 +173,5 @@ GET    /api/device/unknown-users                     # unmapped punching IDs
 - `server/src/utils/attendanceLogic.js` — pure, unit-tested status algorithm
   (13 cases: `npm test`).
 - `server/.env.example` — every configuration knob, documented.
+
+Copyright © 2026 Prince Tiwari. All rights reserved.

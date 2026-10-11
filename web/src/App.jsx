@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, CalendarClock, Users, Clock3, Fingerprint, Wifi, WifiOff, Loader2,
+  LayoutDashboard, CalendarClock, CalendarDays, FileText, Users, Clock3, Fingerprint, Wifi, WifiOff, Loader2,
   Radar, Settings2, MonitorSmartphone,
 } from 'lucide-react';
-import { api } from './api/client';
+import { api, fmtDate, todayISO } from './api/client';
 import Dashboard from './pages/Dashboard';
 import Attendance from './pages/Attendance';
+import MonthlyReport from './pages/MonthlyReport';
+import Calendar from './pages/Calendar';
 import Teachers from './pages/Teachers';
 import Shifts from './pages/Shifts';
 import Device from './pages/Device';
@@ -19,6 +21,8 @@ const desktop = typeof window !== 'undefined' ? window.att : undefined;
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/attendance', label: 'Attendance Log', icon: CalendarClock },
+  { to: '/reports', label: 'Monthly Reports', icon: FileText },
+  { to: '/calendar', label: 'Calendar & Holidays', icon: CalendarDays },
   { to: '/teachers', label: 'Teachers & Staff', icon: Users },
   { to: '/shifts', label: 'Shifts', icon: Clock3 },
   { to: '/device', label: 'Device & Sync', icon: Fingerprint },
@@ -74,7 +78,9 @@ function DevicePill() {
 
 const TITLES = {
   '/dashboard': ['Dashboard', 'Today at a glance'],
-  '/attendance': ['Attendance Log', 'Daily punches & statuses'],
+  '/attendance': ['Attendance Log', 'Daily punches & statuses · BS and AD dates'],
+  '/reports': ['Monthly Reports', 'Attendance totals by Bikram Sambat month'],
+  '/calendar': ['Calendar & Holidays', 'Working days and school holidays'],
   '/teachers': ['Teachers & Staff', 'Profiles mapped to ZKTeco enrollment IDs'],
   '/shifts': ['Shifts', 'Schedules & grace periods'],
   '/device': ['Device & Sync', 'ZKTeco link, poller & enrollment'],
@@ -96,7 +102,7 @@ export default function App() {
     const offNav = desktop.onNavigate?.((route) => navigate(route));
     return () => offNav?.();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const today = fmtDate(todayISO(), { weekday: true });
 
   // Auth gate — pass-through instantly when the server has no APP_PASSWORD.
   const [auth, setAuth] = useState('checking'); // checking | need | ok
@@ -184,6 +190,8 @@ export default function App() {
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/attendance" element={<Attendance />} />
+            <Route path="/reports" element={<MonthlyReport />} />
+            <Route path="/calendar" element={<Calendar />} />
             <Route path="/teachers" element={<Teachers />} />
             <Route path="/shifts" element={<Shifts />} />
             <Route path="/device" element={<Device />} />
@@ -192,6 +200,9 @@ export default function App() {
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </main>
+        <footer className="shrink-0 border-t border-slate-200/70 bg-white px-5 py-2 text-center text-[10.5px] text-slate-400">
+          © {new Date().getFullYear()} Prince Tiwari. All rights reserved.
+        </footer>
       </div>
     </div>
   );

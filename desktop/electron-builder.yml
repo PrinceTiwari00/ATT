@@ -5,7 +5,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 appId: com.att.attendance
 productName: ATT Attendance
-copyright: Copyright © 2026 ATT Project
+copyright: Copyright © 2026 Prince Tiwari. All rights reserved.
 
 directories:
   output: release

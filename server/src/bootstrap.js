@@ -94,7 +94,9 @@ function createApp() {
   app.use('/api', require('./middleware/auth')); // active only when APP_PASSWORD set
   app.use('/api/teachers', require('./routes/teachers'));
   app.use('/api/shifts', require('./routes/shifts'));
+  app.use('/api/calendar', require('./routes/calendar'));
   app.use('/api/attendance', require('./routes/attendance'));
+  app.use('/api/reports', require('./routes/reports').router);
   app.use('/api/dashboard', require('./routes/dashboard'));
   app.use('/api/device', require('./routes/device'));
   app.use('/api/system', require('./routes/system'));

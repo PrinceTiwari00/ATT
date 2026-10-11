@@ -4,6 +4,7 @@
 const express = require('express');
 const { getDb } = require('../db/connection');
 const { ensureProcessed } = require('../services/processor');
+const { readCalendar, isWorkingDate, holidayNamesForDate } = require('../services/calendar');
 
 const router = express.Router();
 
@@ -21,6 +22,9 @@ router.get('/summary', (req, res) => {
   const db = getDb();
   const date = req.query.date && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : todayStr();
   ensureProcessed(date, date);
+  const calendar = readCalendar();
+  const holidayNames = holidayNamesForDate(date, calendar);
+  const isWorkday = isWorkingDate(date, calendar);
 
   const kpi = db
     .prepare(
@@ -92,6 +96,7 @@ router.get('/summary', (req, res) => {
   res.json({
     data: {
       date,
+      calendar: { isWorkday, holidayNames },
       kpi: { ...kpi, totalActive, notNow: totalActive - (kpi.rostered || 0) },
       lateList,
       earlyList,

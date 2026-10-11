@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  UserCheck, Clock, LogOut, UserX, Users, ArrowRight,
+  UserCheck, Clock, LogOut, UserX, Users, ArrowRight, CalendarDays,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, CartesianGrid,
 } from 'recharts';
 import { api, fmtTime, fmtDate, humanizeMinutes, todayISO } from '../api/client';
 import KpiCard from '../components/KpiCard';
+import { formatBsDate } from '../lib/nepaliDate';
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
@@ -27,10 +28,10 @@ export default function Dashboard() {
   if (err) return <div className="card p-6 text-sm text-rose-600">Dashboard unavailable: {err}</div>;
   if (!data) return <Loading />;
 
-  const { kpi, lateList, earlyList, deptBreakdown, trend, date } = data;
+  const { kpi, lateList, earlyList, deptBreakdown, trend, date, calendar } = data;
   const trendData = trend.map((t) => ({
     ...t,
-    day: new Date(t.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short' }),
+    day: formatBsDate(t.date, { short: true }),
   }));
   const maxDept = Math.max(1, ...deptBreakdown.map((d) => d.total));
 
@@ -38,6 +39,17 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-5 anim-in">
+      {calendar && !calendar.isWorkday && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-900">
+          <CalendarDays size={17} className="mt-0.5 shrink-0 text-amber-600" />
+          <div>
+            <div className="text-sm font-semibold">Non-working day</div>
+            <p className="text-[12px] text-amber-800">
+              {calendar.holidayNames?.length ? calendar.holidayNames.join(', ') : 'Regular weekly day off'} — absence totals are not counted today.
+            </p>
+          </div>
+        </div>
+      )}
       {/* KPI row (spec § D.4) */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <KpiCard icon={Users} label="Total Present" value={kpi.present} sub={`of ${kpi.totalActive} active staff`} tone="emerald" />
