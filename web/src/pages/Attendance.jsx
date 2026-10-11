@@ -3,6 +3,8 @@ import { Download, RefreshCw, Search, CalendarDays, Hourglass } from 'lucide-rea
 import { api, fmtTime, fmtDate, humanizeMinutes, todayISO, daysAgoISO } from '../api/client';
 import StatusBadges, { rowTone } from '../components/Badge';
 import { useToast } from '../components/Toast';
+import { BsDateFields } from '../components/BsDateFields';
+import { formatAdDate, formatBsDate } from '../lib/nepaliDate';
 
 const STATUS_OPTS = [
   ['', 'All statuses'], ['on_time', 'On time'], ['late', 'Late'],
@@ -54,12 +56,12 @@ export default function Attendance() {
   };
 
   const exportCsv = () => {
-    const head = ['Teacher', 'ZK ID', 'Department', 'Date', 'Shift', 'Check-in', 'Check-out', 'Late (min)', 'Early (min)', 'Work (min)', 'Status'];
+    const head = ['Teacher', 'ZK ID', 'Department', 'Date (BS)', 'Date (AD)', 'Shift', 'Check-in', 'Check-out', 'Late (min)', 'Early (min)', 'Work (min)', 'Status'];
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const lines = [head.map(esc).join(',')];
     for (const r of rows) {
       lines.push([
-        r.full_name, r.zk_user_id, r.department, r.work_date,
+        r.full_name, r.zk_user_id, r.department, formatBsDate(r.work_date), formatAdDate(r.work_date),
         r.shift_name || '', r.check_in || '', r.check_out || '',
         r.late_minutes, r.early_minutes, r.work_minutes ?? '', r.status,
       ].map(esc).join(','));
@@ -85,13 +87,15 @@ export default function Attendance() {
     <div className="anim-in space-y-4">
       {/* Filter bar (spec § D.3) */}
       <div className="card flex flex-wrap items-end gap-3 p-4">
-        <Field label="From">
-          <input type="date" className="input w-[150px]" value={filters.from}
-            max={todayISO()} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} />
+        <Field label="From (BS date)">
+          <div className="w-[235px] max-w-full">
+            <BsDateFields value={filters.from} onChange={(from) => setFilters((f) => ({ ...f, from }))} />
+          </div>
         </Field>
-        <Field label="To">
-          <input type="date" className="input w-[150px]" value={filters.to}
-            max={todayISO()} onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))} />
+        <Field label="To (BS date)">
+          <div className="w-[235px] max-w-full">
+            <BsDateFields value={filters.to} onChange={(to) => setFilters((f) => ({ ...f, to }))} />
+          </div>
         </Field>
         <div className="flex gap-1.5">
           {[['Today', () => setFilters((f) => ({ ...f, from: todayISO(), to: todayISO() }))],
@@ -149,7 +153,7 @@ export default function Attendance() {
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50/80">
                 <th className="th-table">Teacher</th>
-                <th className="th-table">Date</th>
+                <th className="th-table">Date (BS · AD)</th>
                 <th className="th-table">Check-in</th>
                 <th className="th-table">Check-out</th>
                 <th className="th-table">Shift</th>

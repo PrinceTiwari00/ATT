@@ -5,9 +5,17 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useToast } from '../components/Toast';
+import { formatDatePair } from '../lib/nepaliDate';
 
 const desktop = typeof window !== 'undefined' ? window.att : undefined;
 const isDesktop = Boolean(desktop);
+
+function formatTimestamp(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || '');
+  const dayKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return `${formatDatePair(dayKey)} · ${date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+}
 
 function Card({ title, subtitle, icon: Icon, children, right }) {
   return (
@@ -359,7 +367,7 @@ export default function Settings() {
               <div key={b.name} className="flex items-center justify-between gap-3 bg-white px-4 py-2 text-[12.5px]">
                 <span className="truncate font-mono text-slate-700">{b.name}</span>
                 <span className="shrink-0 text-slate-500">
-                  {(b.bytes / 1048576).toFixed(2)} MB · {new Date(b.at).toLocaleString()}
+                  {(b.bytes / 1048576).toFixed(2)} MB · {formatTimestamp(b.at)}
                 </span>
               </div>
             ))}

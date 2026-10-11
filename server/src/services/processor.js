@@ -15,6 +15,7 @@ const { getDb } = require('../db/connection');
 const { evaluateDay } = require('../utils/attendanceLogic');
 const { todayStr } = require('../zk/deviceContract');
 const { todayKey, eachDay } = require('../lib/localDate');
+const { readCalendar, isWorkingDate } = require('./calendar');
 
 function getDefaultShift(db) {
   return (
@@ -87,6 +88,22 @@ function recomputeTeacherDate(teacherId, workDate) {
  */
 function recomputeDate(workDate) {
   const db = getDb();
+  const calendar = readCalendar();
+  if (!isWorkingDate(workDate, calendar)) {
+    // Holidays and weekends are not absence days. Keep/rebuild genuine punches
+    // (for occasional holiday work), but remove materialized zero-punch rows.
+    db.prepare('DELETE FROM processed_attendance WHERE work_date = ? AND punch_count = 0').run(workDate);
+    const teachers = db
+      .prepare(
+        `SELECT DISTINCT t.id
+         FROM teachers t JOIN attendance_logs l ON l.teacher_id = t.id
+         WHERE t.status = 'active' AND substr(l.punch_time, 1, 10) = ?`
+      )
+      .all(workDate);
+    for (const t of teachers) recomputeTeacherDate(t.id, workDate);
+    return teachers.length;
+  }
+
   const teachers = db
     .prepare("SELECT id FROM teachers WHERE status = 'active'")
     .all();
@@ -171,13 +188,43 @@ function ensureProcessed(from, to) {
   const today = todayKey();
   // day keys are zero-padded YYYY-MM-DD, so string order is calendar order
   const end = to < today ? to : today;
+  const calendar = readCalendar();
+  const activeCount = db.prepare("SELECT COUNT(*) AS c FROM teachers WHERE status = 'active'").get().c;
   let guard = 0;
   for (const s of eachDay(from, end)) {
-    if (guard++ >= 31) break;
-    const has = db
-      .prepare('SELECT 1 FROM processed_attendance WHERE work_date = ? LIMIT 1')
-      .get(s);
-    if (!has) recomputeDate(s);
+    // Keep in step with the attendance API's maximum 62-day range (BS months
+    // can contain 32 days, so the old 31-day guard was too short for reports).
+    if (guard++ >= 62) break;
+    if (!isWorkingDate(s, calendar)) {
+      const staleAbsences = db
+        .prepare('SELECT 1 FROM processed_attendance WHERE work_date = ? AND punch_count = 0 LIMIT 1')
+        .get(s);
+      if (staleAbsences) db.prepare('DELETE FROM processed_attendance WHERE work_date = ? AND punch_count = 0').run(s);
+      const unprocessedPunches = db
+        .prepare(
+          `SELECT 1
+           FROM attendance_logs l JOIN teachers t ON t.id = l.teacher_id
+           WHERE t.status = 'active' AND substr(l.punch_time, 1, 10) = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM processed_attendance p
+               WHERE p.teacher_id = t.id AND p.work_date = ? AND p.punch_count > 0
+             )
+           LIMIT 1`
+        )
+        .get(s, s);
+      if (unprocessedPunches) recomputeDate(s);
+      continue;
+    }
+
+    if (activeCount === 0) continue;
+    const processedCount = db
+      .prepare(
+        `SELECT COUNT(*) AS c
+         FROM processed_attendance p JOIN teachers t ON t.id = p.teacher_id
+         WHERE p.work_date = ? AND t.status = 'active'`
+      )
+      .get(s).c;
+    if (processedCount < activeCount) recomputeDate(s);
   }
 }
 
