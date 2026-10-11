@@ -137,6 +137,20 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    id: 4,
+    name: 'staff-work-patterns',
+    sql: `
+      -- Part-time staff. 'employment_type' is the label the school works with;
+      -- 'working_days' is the person's OWN weekday pattern (JSON array of
+      -- weekday numbers) and NULL means "follow the school working week".
+      -- Without this every active profile was expected on every school working
+      -- day, so a Mon/Wed/Fri teacher silently collected two absences a week.
+      ALTER TABLE teachers ADD COLUMN employment_type TEXT NOT NULL DEFAULT 'full_time'
+        CHECK (employment_type IN ('full_time', 'part_time'));
+      ALTER TABLE teachers ADD COLUMN working_days TEXT;   -- e.g. '[1,3,5]' | NULL
+    `,
+  },
 ];
 
 function migrate() {

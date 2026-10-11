@@ -71,6 +71,8 @@ sequenceDiagram
 | Unknown enrollment IDs punching | Stored with `teacher_id = NULL`, surfaced for import | `routes/device.js` → `/unknown-users` |
 | Service downtime gaps | `ensureProcessed()` lazily back-fills missing days on view | `services/processor.js` |
 | Shift edited after-the-fact | Last-30-days rebuild triggers automatically | `routes/shifts.js`, `routes/teachers.js` |
+| Part-time pattern changed | Same last-30-days rebuild; stale absence rows are dropped on every rebuild | `routes/teachers.js`, `services/processor.js` |
+| Absence count per person, not per school | `isTeacherExpectedDate` gates ledger rows, dashboard & reports | `services/calendar.js` |
 | Two ATT processes on one PC | `<ATT_HOME>/runtime.json` lock; second start exits 3, shell attaches | `services/instance.js` |
 | Device moved / re-IP'd | Live reconfigure + LAN discovery from the Connect wizard | `zk/manager.js` · `net/diagnostics.js` |
 
@@ -84,6 +86,20 @@ BS month/day definitions) and `calendar_day_overrides` (single-date exceptions
 set from the calendar grid, e.g. a holiday the school works); non-working dates
 never generate absences, and an override always wins over the weekly rule and
 the holiday list for its own date.
+
+**Part-time staff.** A profile can carry its own weekday pattern in
+`teachers.working_days` (JSON array, `NULL` = follow the school week) plus an
+`employment_type` label. Processing, the dashboard and the monthly report all
+ask one question per person instead of one per school: *is this date a working
+day for them?* — i.e. the school is open AND the weekday is inside their
+pattern. So a Mon/Wed/Fri teacher is absent on a missed Monday, invisible on a
+Tuesday, and never charged lateness for a day they were not due for (a punch
+there is recorded as extra work with its hours, then reuses the shift rules on
+their own days). A personal pattern cannot override a closure: named holidays
+and explicit "off" overrides release everybody, while a make-up "work this
+Saturday" only pulls in the people whose pattern includes Saturday. The rules
+live in `services/calendar.js` (`isTeacherExpectedDate`) and are edited on the
+web **Part-time Staff** page.
 
 ```mermaid
 erDiagram
@@ -110,6 +126,8 @@ erDiagram
         text email
         text phone
         text status          "active | inactive"
+        text employment_type "full_time | part_time"
+        text working_days    "JSON weekday pattern | NULL"
     }
     ATTENDANCE_LOGS {
         int id PK

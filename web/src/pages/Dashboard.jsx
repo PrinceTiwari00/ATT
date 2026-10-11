@@ -34,6 +34,13 @@ export default function Dashboard() {
     day: formatBsDate(t.date, { short: true }),
   }));
   const maxDept = Math.max(1, ...deptBreakdown.map((d) => d.total));
+  // 'of 9 expected today' — part-timers not on their own day are neither
+  // present nor absent, so the denominator is the roster due today.
+  const expectedToday = kpi.expectedToday ?? kpi.totalActive;
+  const presentSub = !calendar?.isWorkday
+    ? 'day off for the whole school'
+    : `of ${expectedToday} expected today` +
+      (kpi.offPatternToday ? ` · ${kpi.offPatternToday} not scheduled` : '');
 
   if (kpi.totalActive === 0) return <EmptySetup />;
 
@@ -52,11 +59,13 @@ export default function Dashboard() {
       )}
       {/* KPI row (spec § D.4) */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-        <KpiCard icon={Users} label="Total Present" value={kpi.present} sub={`of ${kpi.totalActive} active staff`} tone="emerald" />
+        <KpiCard icon={Users} label="Total Present" value={kpi.present}
+          sub={presentSub} tone="emerald" />
         <KpiCard icon={UserCheck} label="On Time" value={kpi.on_time} sub={`≤ shift start + grace`} tone="indigo" />
         <KpiCard icon={Clock} label="Late Arrivals" value={kpi.late} sub={kpi.worst_late ? `worst +${humanizeMinutes(kpi.worst_late)}` : 'none today'} tone="rose" />
         <KpiCard icon={LogOut} label="Early Departures" value={kpi.early} sub="left before shift end" tone="amber" />
-        <KpiCard icon={UserX} label="Absent" value={kpi.absent} sub={fmtDate(date)} tone="slate" />
+        <KpiCard icon={UserX} label="Absent" value={kpi.absent}
+          sub={`no punch on their own working day · ${fmtDate(date)}`} tone="slate" />
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">

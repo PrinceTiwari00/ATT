@@ -5,12 +5,15 @@ import { BsMonthFields } from '../components/BsDateFields';
 import KpiCard from '../components/KpiCard';
 import { useToast } from '../components/Toast';
 import { adToBsParts, formatAdDate, formatDatePair } from '../lib/nepaliDate';
+import { patternLabel } from '../lib/workPattern';
 
 const initialMonth = () => adToBsParts(todayISO()) || { year: 2083, month: 1 };
 const CSV_COLUMNS = [
   ['Full name', 'fullName'],
   ['ZKTeco ID', 'zkUserId'],
   ['Department', 'department'],
+  ['Employment', (row) => employmentLabel(row)],
+  ['Working days (their own pattern)', (row) => formatWorkPattern(row)],
   ['Scheduled workdays in month', 'scheduledWorkdays'],
   ['Elapsed workdays', 'workingDays'],
   ['Present days', 'presentDays'],
@@ -21,8 +24,17 @@ const CSV_COLUMNS = [
   ['Early departure time (minutes)', 'earlyMinutes'],
   ['Overtime days', 'overtimeDays'],
   ['Overtime (minutes)', 'overtimeMinutes'],
-  ['Non-working-day punch days', 'nonWorkingDayPunches'],
+  ['Off-day / off-pattern punch days', 'nonWorkingDayPunches'],
 ];
+
+/** How a row should be labelled for pay: full-time or part-time. */
+function employmentLabel(row) {
+  return row.partTime || row.employmentType === 'part_time' ? 'Part-time' : 'Full-time';
+}
+/** The days a person was measured against, as words instead of JSON. */
+function formatWorkPattern(row) {
+  return row.followsSchoolWeek === false ? patternLabel(row.workPattern) : 'Every school day';
+}
 
 function csvCell(value) {
   return `"${String(value ?? '').replace(/"/g, '""')}"`;
@@ -52,9 +64,12 @@ export default function MonthlyReport() {
     const lines = [
       [csvCell('Monthly attendance'), csvCell(report.period.bsLabel)].join(','),
       [csvCell('Gregorian period'), csvCell(`${report.period.from} to ${report.period.to}`)].join(','),
+      [csvCell('Day counts'), csvCell("each person's own working days")].join(','),
       [],
       CSV_COLUMNS.map(([label]) => csvCell(label)).join(','),
-      ...report.staff.map((person) => CSV_COLUMNS.map(([, field]) => csvCell(person[field])).join(',')),
+      ...report.staff.map((person) => CSV_COLUMNS.map(([, field]) => csvCell(
+        typeof field === 'function' ? field(person) : person[field]
+      )).join(',')),
     ];
     const blob = new Blob(['\uFEFF', lines.map((line) => Array.isArray(line) ? line.join(',') : line).join('\r\n')], {
       type: 'text/csv;charset=utf-8',
@@ -95,7 +110,8 @@ export default function MonthlyReport() {
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
             <KpiCard icon={CalendarDays} label="Working days" value={summary.calendarWorkdays} sub={`${summary.completedWorkdays} elapsed · ${summary.remainingWorkdays} remaining`} tone="indigo" />
             <KpiCard icon={UserCheck} label="Present days" value={summary.presentDays} sub="staff-days with a punch" tone="emerald" />
-            <KpiCard icon={UserX} label="Absent days" value={summary.absentDays} sub="scheduled workdays only" tone="slate" />
+            <KpiCard icon={UserX} label="Absent days" value={summary.absentDays}
+              sub={`of ${summary.expectedStaffDays} expected staff-days`} tone="slate" />
             <KpiCard icon={Clock3} label="Late arrivals" value={summary.lateDays} sub={humanizeMinutes(summary.lateMinutes)} tone="rose" />
             <KpiCard icon={LogOut} label="Early departures" value={summary.earlyDepartureDays} sub={humanizeMinutes(summary.earlyMinutes)} tone="purple" />
             <KpiCard icon={Timer} label="Overtime" value={summary.overtimeDays} sub={humanizeMinutes(summary.overtimeMinutes)} tone="amber" />
@@ -120,7 +136,7 @@ export default function MonthlyReport() {
                     <th className="th-table text-right">Late days · time</th>
                     <th className="th-table text-right">Early depart. · time</th>
                     <th className="th-table text-right">Overtime · time</th>
-                    <th className="th-table text-right">Off-day punches</th>
+                    <th className="th-table text-right">Off-day / off-pattern punches</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -129,10 +145,23 @@ export default function MonthlyReport() {
                   ) : report.staff.map((person) => (
                     <tr key={person.id} className="border-b border-slate-100 transition hover:bg-slate-50">
                       <td className="td-table">
-                        <div className="font-semibold text-slate-900">{person.fullName}</div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-semibold text-slate-900">{person.fullName}</span>
+                          {(person.partTime || person.followsSchoolWeek === false) && (
+                            <span className="badge bg-amber-100 text-amber-700"
+                              title="Counted against their own working days, not the school week">
+                              {employmentLabel(person)} · {patternLabel(person.workPattern)}
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[11.5px] text-slate-400">ZK #{person.zkUserId} · {person.department}</div>
                       </td>
-                      <td className="td-table text-right tabular-nums">{person.workingDays} / {person.scheduledWorkdays}</td>
+                      <td className="td-table text-right tabular-nums">
+                        {person.workingDays} / {person.scheduledWorkdays}
+                        {person.followsSchoolWeek === false && (
+                          <div className="text-[11px] text-slate-400">their own days</div>
+                        )}
+                      </td>
                       <td className="td-table text-right font-semibold tabular-nums text-emerald-700">{person.presentDays}</td>
                       <td className="td-table text-right font-semibold tabular-nums text-slate-700">{person.absentDays}</td>
                       <td className="td-table text-right tabular-nums"><span className="font-semibold text-rose-700">{person.lateDays}</span><span className="text-slate-400"> · {humanizeMinutes(person.lateMinutes)}</span></td>
@@ -163,11 +192,16 @@ export default function MonthlyReport() {
             <section className="card p-5">
               <h2 className="text-sm font-bold text-slate-800">How totals are counted</h2>
               <ul className="mt-3 space-y-2 text-[12.5px] leading-relaxed text-slate-500">
-                <li><b className="text-slate-700">Present:</b> at least one punch on a scheduled working day.</li>
-                <li><b className="text-slate-700">Absent:</b> a completed scheduled working day with no punches. Weekends, configured days off, and holidays are excluded; future workdays are not counted as absent.</li>
-                <li><b className="text-slate-700">Late:</b> after the assigned shift’s grace period; total late minutes are measured from the scheduled start time.</li>
+                <li><b className="text-slate-700">Present:</b> at least one punch on a day this person is scheduled for.</li>
+                <li><b className="text-slate-700">Absent:</b> a completed scheduled day with no punches. Each person is measured
+                  against their own working days — a part-timer set to Mon/Wed/Fri is never absent on a Tuesday. Weekends,
+                  configured days off and holidays are excluded for everyone, and future days are never counted absent.
+                  {summary.partTimeStaff > 0 && <> {summary.partTimeStaff} of {summary.staffCount} staff carry a personal pattern this month.</>}</li>
+                <li><b className="text-slate-700">Late:</b> on one of their own days, after the assigned shift’s grace period; total
+                  late minutes are measured from the scheduled start time. Off-pattern arrivals are never marked late.</li>
                 <li><b className="text-slate-700">Early departure:</b> check-out before the scheduled shift end. <b className="text-slate-700">Overtime:</b> check-out after shift end.</li>
-                <li>Punches on days off are listed separately and do not change the scheduled-day totals.</li>
+                <li>Punches on a day off — or on a weekday outside the person&rsquo;s own pattern — are listed separately and do
+                  not change the scheduled-day totals.</li>
               </ul>
             </section>
           </div>

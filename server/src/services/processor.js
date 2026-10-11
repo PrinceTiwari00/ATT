@@ -15,7 +15,7 @@ const { getDb } = require('../db/connection');
 const { evaluateDay } = require('../utils/attendanceLogic');
 const { todayStr } = require('../zk/deviceContract');
 const { todayKey, eachDay } = require('../lib/localDate');
-const { readCalendar, isWorkingDate } = require('./calendar');
+const { readCalendar, isWorkingDate, isTeacherExpectedDate } = require('./calendar');
 
 function getDefaultShift(db) {
   return (
@@ -33,8 +33,12 @@ function resolveShift(db, teacher) {
   return getDefaultShift(db);
 }
 
-/** Recompute one (teacher, date) — the atomic unit of the engine. */
-function recomputeTeacherDate(teacherId, workDate) {
+/**
+ * Recompute one (teacher, date) — the atomic unit of the engine.
+ * `calendar` may be passed in by a caller that already read it (recomputeDate
+ * loops over the whole roster and must not re-read the rules per person).
+ */
+function recomputeTeacherDate(teacherId, workDate, calendar = readCalendar()) {
   const db = getDb();
   const teacher = db.prepare('SELECT * FROM teachers WHERE id = ?').get(teacherId);
   if (!teacher) return null;
@@ -49,7 +53,14 @@ function recomputeTeacherDate(teacherId, workDate) {
     .map((r) => r.punch_time);
 
   const shift = resolveShift(db, teacher);
-  const result = evaluateDay({ punches, shift, workDate });
+  /*
+   * Only a day the person is actually due for is governed by the shift window.
+   * Anything else — a Mon/Wed/Fri teacher who came in on a Tuesday, anyone
+   * called in on a holiday — is still recorded (check-in/out, hours) but never
+   * charged lateness or early departure, exactly like a profile with no shift.
+   */
+  const onTheirDay = isTeacherExpectedDate(teacher, workDate, calendar);
+  const result = evaluateDay({ punches, shift: onTheirDay ? shift : null, workDate });
 
   db.prepare(
     `INSERT INTO processed_attendance
@@ -81,34 +92,55 @@ function recomputeTeacherDate(teacherId, workDate) {
   return result;
 }
 
+/** Active teachers that really have raw punches on a date. */
+function punchedTeacherIds(db, workDate) {
+  return db
+    .prepare(
+      `SELECT DISTINCT t.id
+       FROM teachers t JOIN attendance_logs l ON l.teacher_id = t.id
+       WHERE t.status = 'active' AND substr(l.punch_time, 1, 10) = ?`
+    )
+    .all(workDate)
+    .map((row) => row.id);
+}
+
+const ACTIVE_ROSTER_SQL = `SELECT id, employment_type, working_days FROM teachers WHERE status = 'active'`;
+
 /**
- * Recompute a full calendar date for ALL active teachers. Teachers without
- * any punch get an 'absent' row — the ledger is therefore complete for every
- * processed date and flips automatically when late punches arrive.
+ * Recompute a full calendar date. Absence rows are materialized for everyone
+ * the date is a working day FOR — i.e. the school is open that day and it is
+ * one of their own weekdays — so a Mon/Wed/Fri part-timer is simply not on the
+ * ledger on a Tuesday instead of being counted absent.
+ *
+ * A person who punches on a day they were not due for still gets a row (their
+ * attendance must not vanish), and any stale zero-punch row from an older rule
+ * is removed, which makes every pattern/calendar change self-healing on rebuild.
  */
 function recomputeDate(workDate) {
   const db = getDb();
   const calendar = readCalendar();
+  const teachers = db.prepare(ACTIVE_ROSTER_SQL).all();
+  const punched = new Set(punchedTeacherIds(db, workDate));
+
+  // Whole-school closures (weekly off, holiday) never leave an absence behind.
+  // Rebuilding from scratch is safe: the loop below re-creates what the personal
+  // patterns still require (e.g. a Saturday-only teacher on a school Saturday).
   if (!isWorkingDate(workDate, calendar)) {
-    // Holidays and weekends are not absence days. Keep/rebuild genuine punches
-    // (for occasional holiday work), but remove materialized zero-punch rows.
     db.prepare('DELETE FROM processed_attendance WHERE work_date = ? AND punch_count = 0').run(workDate);
-    const teachers = db
-      .prepare(
-        `SELECT DISTINCT t.id
-         FROM teachers t JOIN attendance_logs l ON l.teacher_id = t.id
-         WHERE t.status = 'active' AND substr(l.punch_time, 1, 10) = ?`
-      )
-      .all(workDate);
-    for (const t of teachers) recomputeTeacherDate(t.id, workDate);
-    return teachers.length;
   }
 
-  const teachers = db
-    .prepare("SELECT id FROM teachers WHERE status = 'active'")
-    .all();
-  for (const t of teachers) recomputeTeacherDate(t.id, workDate);
-  return teachers.length;
+  let touched = 0;
+  for (const teacher of teachers) {
+    if (isTeacherExpectedDate(teacher, workDate, calendar) || punched.has(teacher.id)) {
+      recomputeTeacherDate(teacher.id, workDate, calendar);
+      touched += 1;
+    } else {
+      db.prepare(
+        'DELETE FROM processed_attendance WHERE teacher_id = ? AND work_date = ? AND punch_count = 0'
+      ).run(teacher.id, workDate);
+    }
+  }
+  return touched;
 }
 
 function recomputeRange(from, to) {
@@ -189,43 +221,58 @@ function ensureProcessed(from, to) {
   // day keys are zero-padded YYYY-MM-DD, so string order is calendar order
   const end = to < today ? to : today;
   const calendar = readCalendar();
-  const activeCount = db.prepare("SELECT COUNT(*) AS c FROM teachers WHERE status = 'active'").get().c;
+  const roster = db.prepare(ACTIVE_ROSTER_SQL).all();
   let guard = 0;
   for (const s of eachDay(from, end)) {
     // Keep in step with the attendance API's maximum 62-day range (BS months
     // can contain 32 days, so the old 31-day guard was too short for reports).
     if (guard++ >= 62) break;
-    if (!isWorkingDate(s, calendar)) {
-      const staleAbsences = db
-        .prepare('SELECT 1 FROM processed_attendance WHERE work_date = ? AND punch_count = 0 LIMIT 1')
-        .get(s);
-      if (staleAbsences) db.prepare('DELETE FROM processed_attendance WHERE work_date = ? AND punch_count = 0').run(s);
-      const unprocessedPunches = db
-        .prepare(
-          `SELECT 1
-           FROM attendance_logs l JOIN teachers t ON t.id = l.teacher_id
-           WHERE t.status = 'active' AND substr(l.punch_time, 1, 10) = ?
-             AND NOT EXISTS (
-               SELECT 1 FROM processed_attendance p
-               WHERE p.teacher_id = t.id AND p.work_date = ? AND p.punch_count > 0
-             )
-           LIMIT 1`
-        )
-        .get(s, s);
-      if (unprocessedPunches) recomputeDate(s);
-      continue;
-    }
-
-    if (activeCount === 0) continue;
-    const processedCount = db
-      .prepare(
-        `SELECT COUNT(*) AS c
-         FROM processed_attendance p JOIN teachers t ON t.id = p.teacher_id
-         WHERE p.work_date = ? AND t.status = 'active'`
-      )
-      .get(s).c;
-    if (processedCount < activeCount) recomputeDate(s);
+    if (dateNeedsRebuild(db, s, calendar, roster)) recomputeDate(s);
   }
+}
+
+/**
+ * Does this processed date match what the roster + the calendar ask for?
+ *
+ *  • someone who is due on the date (school open AND their own weekday) or who
+ *    actually punched must have a row;
+ *  • a row that says "absent" while raw punches exist means the punches arrived
+ *    after the day was last built;
+ *  • an absence row on a day that is NOT part of the person's pattern — or on a
+ *    closure day for a profile that has since been deactivated — must go.
+ *
+ * This replaces the old "one row per active profile" count check, which can
+ * never be satisfied once part-timers exist (and would rebuild every view).
+ */
+function dateNeedsRebuild(db, dateKey, calendar, roster) {
+  const rows = db
+    .prepare(
+      `SELECT p.teacher_id, p.punch_count, t.status AS teacher_status
+       FROM processed_attendance p JOIN teachers t ON t.id = p.teacher_id
+       WHERE p.work_date = ?`
+    )
+    .all(dateKey);
+  const rowOf = new Map(rows.map((row) => [row.teacher_id, row]));
+  const punched = new Set(punchedTeacherIds(db, dateKey));
+
+  for (const teacher of roster) {
+    const row = rowOf.get(teacher.id);
+    if (isTeacherExpectedDate(teacher, dateKey, calendar) || punched.has(teacher.id)) {
+      if (!row) return true;
+      if (!row.punch_count && punched.has(teacher.id)) return true;
+    } else if (row && !row.punch_count) {
+      return true;
+    }
+  }
+
+  // A closure day carries no absences at all, not even for people who left the
+  // active roster after the day was materialized.
+  const rosterIds = new Set(roster.map((teacher) => teacher.id));
+  if (!isWorkingDate(dateKey, calendar) &&
+      rows.some((row) => !row.punch_count && !rosterIds.has(row.teacher_id))) {
+    return true;
+  }
+  return false;
 }
 
 module.exports = {

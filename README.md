@@ -104,7 +104,7 @@ For each teacher and day (from `processed_attendance`):
 | 🟢 On time | first punch ≤ start+g **and** last punch ≥ end |
 | 🔴 Late | first punch > start+g — badge shows lateness from scheduled start |
 | 🟣 Early departure | last punch < end — badge shows minutes under end |
-| ⚫ Absent | no punches that day |
+| ⚫ Absent | no punches that day — and only on a day that is a working day **for that person** |
 
 Middle-of-day stray punches are ignored (first/last rule); single-punch days
 are flagged **OPEN**. Overnight shifts (end ≤ start) roll to the next day.
@@ -118,7 +118,9 @@ ZKTeco punch timestamps and database keys remain Gregorian internally. The
 **Monthly Reports** page selects a BS month and totals each staff member's
 present/absent workdays, late arrivals and minutes, early departures and
 minutes, and overtime. It also downloads a CSV. Future working days are not
-counted as absences.
+counted as absences, and every count is measured against that person's own
+working days (see below) — the CSV carries the pattern next to the numbers so a
+part-time total can be read correctly by whoever runs payroll.
 
 **Calendar & Holidays** shows the school month as a real calendar (Bikram Sambat
 with the matching Gregorian dates). Set the regular working week (new installs
@@ -138,6 +140,30 @@ One-off/recurring holidays can still be maintained in the list below the
 calendar. Weekends, named holidays and day-level exceptions are all resolved in
 one place (`services/calendar.js`), so the dashboard, monthly reports and the
 daily ledger agree immediately after a change.
+
+### Part-time staff (their own working days)
+
+**Part-time Staff** lists everyone with a personal weekday pattern. Tick the days
+a person is actually on duty (Sun–Sat), optionally give them a shorter shift, and
+watch the month preview update before you save:
+
+- Expected days, present days and absences are counted against **their** pattern —
+  a Mon/Wed/Fri teacher is not absent on a Tuesday, and their absent total can
+  never exceed the days they owed.
+- The dashboard's "expected today" only counts the people due in today, so part-timers
+  at home on their off day are neither present nor absent.
+- Punches on a day they were not due for are kept (hours recorded, listed as
+  *off-day / off-pattern punches*) but never charged as late or early — the shift
+  window only applies on their own days.
+- The school calendar still wins: a named holiday or an explicit day off releases
+  everybody, and a "work this Saturday" make-up only pulls in staff whose pattern
+  includes Saturday.
+- No pattern = follow the school working week, so full-time staff are unchanged.
+  Saving a pattern rebuilds the last 30 days, and any later rebuild re-derives the
+  rows from the raw ledger — a wrong absence never sticks around.
+
+`GET/PUT /api/teachers[/:id]` carry `employment_type` (`full_time` | `part_time`)
+and `working_days` (JSON array of weekday numbers, Sunday = 0, or `null`).
 
 ## Developing without a device (optional)
 
