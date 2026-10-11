@@ -1,4 +1,12 @@
-/** Workweek and holiday calendar rules shared by processing and reports. */
+/**
+ * Workweek, holiday and per-day calendar rules shared by processing and reports.
+ *
+ * Resolution order for one calendar day (highest first):
+ *   1. a per-day override  (calendar_day_overrides) — "work this holiday",
+ *      "take this working day off", "work this Saturday"
+ *   2. a named holiday     (calendar_holidays) — one-off date or annual BS date
+ *   3. the regular working week (calendar_settings.working_days)
+ */
 const { getDb } = require('../db/connection');
 const { eachDay, parseLocalDate } = require('../lib/localDate');
 const { BS_MONTHS, adToBs } = require('../lib/nepaliDate');
@@ -18,7 +26,26 @@ function readCalendar() {
   const holidays = db
     .prepare('SELECT id, name, kind, date, bs_month, bs_day FROM calendar_holidays ORDER BY id')
     .all();
-  return { workingDays, holidays };
+  const overrides = db
+    .prepare('SELECT date, is_working, note FROM calendar_day_overrides ORDER BY date')
+    .all();
+  return {
+    workingDays,
+    holidays,
+    overrides,
+    overridesByDate: new Map(overrides.map((row) => [row.date, row])),
+  };
+}
+
+/** The per-day exception for a date, or null when the regular rules apply. */
+function overrideForDate(dateKey, calendar = readCalendar()) {
+  if (calendar.overridesByDate) return calendar.overridesByDate.get(dateKey) || null;
+  return (calendar.overrides || []).find((row) => row.date === dateKey) || null;
+}
+
+/** True when the weekday itself is part of the configured regular working week. */
+function isWeeklyWorkday(dateKey, calendar = readCalendar()) {
+  return calendar.workingDays.includes(parseLocalDate(dateKey).getDay());
 }
 
 function holidayNamesForDate(dateKey, calendar = readCalendar()) {
@@ -34,8 +61,9 @@ function holidayNamesForDate(dateKey, calendar = readCalendar()) {
 }
 
 function isWorkingDate(dateKey, calendar = readCalendar()) {
-  const date = parseLocalDate(dateKey);
-  if (!calendar.workingDays.includes(date.getDay())) return false;
+  const override = overrideForDate(dateKey, calendar);
+  if (override) return Boolean(override.is_working); // explicit school decision wins
+  if (!isWeeklyWorkday(dateKey, calendar)) return false;
   return holidayNamesForDate(dateKey, calendar).length === 0;
 }
 
@@ -43,6 +71,8 @@ function holidayOccurrences(from, to, calendar = readCalendar()) {
   const rows = [];
   const needsBs = calendar.holidays.some((h) => h.kind === 'annual');
   for (const date of eachDay(from, to)) {
+    // A holiday the school decided to work is counted as a normal working day.
+    if (overrideForDate(date, calendar)?.is_working) continue;
     const bs = needsBs ? adToBs(date) : null;
     const names = [];
     for (const holiday of calendar.holidays) {
@@ -54,6 +84,45 @@ function holidayOccurrences(from, to, calendar = readCalendar()) {
     if (names.length) rows.push({ date, names, bs });
   }
   return rows;
+}
+
+/**
+ * Everything the UI needs to draw one day of the calendar grid.
+ * `source` says WHY the day resolves the way it does:
+ *   workweek — plain regular working week day
+ *   off_week — weekly off (not in the regular working week)
+ *   holiday  — a named one-off / annual holiday
+ *   override — the school set this specific date by hand
+ */
+function describeDay(dateKey, calendar = readCalendar()) {
+  const date = parseLocalDate(dateKey);
+  const weekday = date.getDay();
+  const bs = adToBs(dateKey);
+  const override = overrideForDate(dateKey, calendar);
+  const holidayNames = holidayNamesForDate(dateKey, calendar);
+  const weeklyWorkday = calendar.workingDays.includes(weekday);
+  const isWorkingDay = isWorkingDate(dateKey, calendar);
+
+  let source = 'off_week';
+  if (override) source = 'override';
+  else if (holidayNames.length) source = 'holiday';
+  else if (weeklyWorkday) source = 'workweek';
+
+  return {
+    date: dateKey,
+    weekday,
+    weeklyWorkday,
+    isWorkingDay,
+    isHoliday: holidayNames.length > 0,
+    holidayNames,
+    source,
+    override: override ? { isWorking: Boolean(override.is_working), note: override.note || null } : null,
+    bs: bs ? { year: bs.year, month: bs.month, day: bs.day, monthName: BS_MONTHS[bs.month - 1] } : null,
+  };
+}
+
+function describeDayRange(from, to, calendar = readCalendar()) {
+  return [...eachDay(from, to)].map((date) => describeDay(date, calendar));
 }
 
 function describeHolidays(calendar = readCalendar()) {
@@ -86,11 +155,25 @@ function describeHolidays(calendar = readCalendar()) {
   });
 }
 
+/** Per-day exceptions ("this holiday is a working day") for the calendar page. */
+function describeOverrides(calendar = readCalendar()) {
+  return calendar.overrides.map((row) => ({
+    date: row.date,
+    isWorking: Boolean(row.is_working),
+    note: row.note || null,
+  }));
+}
+
 module.exports = {
   DEFAULT_WORKING_DAYS,
   readCalendar,
+  overrideForDate,
+  isWeeklyWorkday,
   holidayNamesForDate,
   isWorkingDate,
   holidayOccurrences,
+  describeDay,
+  describeDayRange,
   describeHolidays,
+  describeOverrides,
 };

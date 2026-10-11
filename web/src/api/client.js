@@ -88,6 +88,8 @@ export const api = {
 
   // school calendar
   calendar: () => request(`/calendar`),
+  calendarDays: (from, to) => request(`/calendar/days?${new URLSearchParams({ from, to })}`),
+  setCalendarDays: (data) => request(`/calendar/days`, { method: 'PUT', body: JSON.stringify(data) }),
   saveWorkingDays: (workingDays) => request(`/calendar/workdays`, {
     method: 'PUT', body: JSON.stringify({ workingDays }),
   }),
