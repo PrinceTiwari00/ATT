@@ -45,7 +45,7 @@ function dateStrOffset(daysAgo) {
 function wipe() {
   const db = getDb();
   db.exec('BEGIN');
-  for (const t of ['processed_attendance', 'attendance_logs', 'teachers', 'shifts', 'sync_state', 'calendar_holidays']) {
+  for (const t of ['processed_attendance', 'attendance_logs', 'teachers', 'shifts', 'sync_state', 'calendar_holidays', 'calendar_day_overrides']) {
     db.exec(`DELETE FROM ${t}`);
   }
   db.prepare("UPDATE calendar_settings SET working_days = '[1,2,3,4,5]' WHERE id = 1").run();

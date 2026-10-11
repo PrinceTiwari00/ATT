@@ -1,7 +1,10 @@
-/** Calendar settings and one-off / recurring school holidays. */
+/**
+ * Calendar settings, one-off / recurring school holidays, and per-day
+ * exceptions ("work this holiday", "take this working day off").
+ */
 const express = require('express');
 const { getDb } = require('../db/connection');
-const { parseLocalDate } = require('../lib/localDate');
+const { eachDay, parseLocalDate, todayKey } = require('../lib/localDate');
 const {
   BS_MONTHS,
   MIN_BS_YEAR,
@@ -9,9 +12,21 @@ const {
   daysInBsMonth,
   adToBs,
 } = require('../lib/nepaliDate');
-const { readCalendar, describeHolidays } = require('../services/calendar');
+const {
+  readCalendar,
+  describeHolidays,
+  describeOverrides,
+  describeDay,
+  describeDayRange,
+} = require('../services/calendar');
+const { recomputeDate } = require('../services/processor');
 
 const router = express.Router();
+
+const MAX_DATES_PER_WRITE = 200; // a dragged range can be long, but never unbounded
+const MAX_DATES_PER_READ = 93; // matches the attendance API's largest window
+const DAY_MODES = ['workday', 'holiday', 'default'];
+const DEFAULT_HOLIDAY_NAME = 'School holiday';
 
 function validDayKey(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -54,11 +69,11 @@ function validateHoliday(body = {}) {
   return { errors, value: { name, kind, date: null, bsMonth, bsDay } };
 }
 
-function holidayPayload() {
-  const calendar = readCalendar();
+function calendarPayload(calendar = readCalendar()) {
   return {
     workingDays: [...calendar.workingDays].sort((a, b) => a - b),
     holidays: describeHolidays(calendar),
+    overrides: describeOverrides(calendar),
   };
 }
 
@@ -88,8 +103,165 @@ function saveHoliday({ id = null, value }) {
   }
 }
 
+/**
+ * Apply one decision ("workday" | "holiday" | "default") to a set of dates.
+ *
+ *  • workday — an explicit working-day exception. A one-off holiday record on
+ *    that date is removed (it would contradict the decision); annual holidays
+ *    are left alone because they apply to every year, the exception wins for
+ *    this date only.
+ *  • holiday — the date becomes a named holiday: one-off by default, or a
+ *    recurring annual BS date when `repeat` is set. Any working-day exception
+ *    on the date is cleared.
+ *  • default — back to the regular working week + holiday list.
+ *
+ * Every touched day up to today is recomputed, so absences / present days in
+ * reports follow the new calendar immediately.
+ */
+function applyDayChange({ dates, mode, name, repeat, note }) {
+  const db = getDb();
+  const holidayName = String(name ?? '').trim().slice(0, 100);
+  const noteText = String(note ?? '').trim().slice(0, 200);
+  const touched = new Set();
+  const removedHolidays = [];
+
+  db.exec('BEGIN');
+  try {
+    for (const date of dates) {
+      touched.add(date);
+      db.prepare('DELETE FROM calendar_day_overrides WHERE date = ?').run(date);
+
+      if (mode === 'workday') {
+        const removed = db
+          .prepare("DELETE FROM calendar_holidays WHERE kind = 'once' AND date = ?")
+          .run(date);
+        if (removed.changes) removedHolidays.push({ date, name: null, reason: 'replaced by a working day' });
+        db.prepare(
+          `INSERT INTO calendar_day_overrides (date, is_working, note, updated_at)
+           VALUES (?, 1, ?, datetime('now','localtime'))`
+        ).run(date, noteText || null);
+        continue;
+      }
+
+      if (mode === 'holiday') {
+        const bs = adToBs(date);
+        if (repeat && bs) {
+          const annual = db
+            .prepare("SELECT id, name FROM calendar_holidays WHERE kind = 'annual' AND bs_month = ? AND bs_day = ?")
+            .get(bs.month, bs.day);
+          if (annual) {
+            if (holidayName && holidayName !== annual.name) {
+              db.prepare('UPDATE calendar_holidays SET name = ? WHERE id = ?').run(holidayName, annual.id);
+            }
+          } else {
+            db.prepare(
+              `INSERT INTO calendar_holidays (name, kind, bs_month, bs_day)
+               VALUES (?, 'annual', ?, ?)`
+            ).run(holidayName || DEFAULT_HOLIDAY_NAME, bs.month, bs.day);
+          }
+          // The annual rule already covers this date; a one-off twin would just
+          // duplicate the name in the holiday list.
+          db.prepare("DELETE FROM calendar_holidays WHERE kind = 'once' AND date = ?").run(date);
+          continue;
+        }
+
+        const oneOff = db
+          .prepare("SELECT id, name FROM calendar_holidays WHERE kind = 'once' AND date = ?")
+          .get(date);
+        if (oneOff) {
+          if (holidayName && holidayName !== oneOff.name) {
+            db.prepare('UPDATE calendar_holidays SET name = ? WHERE id = ?').run(holidayName, oneOff.id);
+          }
+          continue;
+        }
+        const annual = bs
+          ? db.prepare("SELECT id FROM calendar_holidays WHERE kind = 'annual' AND bs_month = ? AND bs_day = ?").get(bs.month, bs.day)
+          : null;
+        if (!annual) {
+          db.prepare(
+            `INSERT INTO calendar_holidays (name, kind, date)
+             VALUES (?, 'once', ?)`
+          ).run(holidayName || DEFAULT_HOLIDAY_NAME, date);
+        }
+        continue;
+      }
+
+      // mode === 'default' — drop the exception and any one-off holiday on the date.
+      db.prepare("DELETE FROM calendar_holidays WHERE kind = 'once' AND date = ?").run(date);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  const today = todayKey();
+  const recomputed = [...touched].filter((date) => date <= today).sort();
+  for (const date of recomputed) recomputeDate(date);
+
+  const calendar = readCalendar();
+  return {
+    ...calendarPayload(calendar),
+    days: [...touched].sort().map((date) => describeDay(date, calendar)),
+    removedHolidays,
+    recomputed,
+  };
+}
+
 router.get('/', (_req, res) => {
-  res.json({ data: holidayPayload() });
+  res.json({ data: calendarPayload() });
+});
+
+/** Day-by-day status for a date window — what the calendar grid renders. */
+router.get('/days', (req, res) => {
+  const from = String(req.query.from || '');
+  const to = String(req.query.to || '');
+  if (!validDayKey(from) || !validDayKey(to)) {
+    return res.status(422).json({ error: 'Provide from and to as YYYY-MM-DD dates inside the supported BS range' });
+  }
+  if (to < from) return res.status(422).json({ error: 'The end date must not be before the start date' });
+  let count = 0;
+  for (const _ of eachDay(from, to)) {
+    if (++count > MAX_DATES_PER_READ) {
+      return res.status(422).json({ error: `Choose a range of ${MAX_DATES_PER_READ} days or fewer` });
+    }
+  }
+  res.json({ data: { from, to, days: describeDayRange(from, to) } });
+});
+
+/** Mark selected day(s) as a working day, a holiday, or back to the default. */
+router.put('/days', (req, res) => {
+  const raw = req.body?.dates ?? (req.body?.date ? [req.body.date] : []);
+  const dates = Array.isArray(raw) ? [...new Set(raw.map((d) => String(d)))] : [];
+  const mode = String(req.body?.mode ?? '');
+
+  if (!dates.length) return res.status(422).json({ error: 'Select at least one calendar day' });
+  if (dates.length > MAX_DATES_PER_WRITE) {
+    return res.status(422).json({ error: `Select ${MAX_DATES_PER_WRITE} days or fewer at a time` });
+  }
+  if (dates.some((date) => !validDayKey(date))) {
+    return res.status(422).json({ error: 'Every selected day must be a valid date within the supported BS range' });
+  }
+  if (!DAY_MODES.includes(mode)) {
+    return res.status(422).json({ error: `mode must be one of ${DAY_MODES.join(', ')}` });
+  }
+  const name = req.body?.name;
+  if (name != null && String(name).trim().length > 100) {
+    return res.status(422).json({ error: 'Holiday name must be 100 characters or fewer' });
+  }
+  const note = req.body?.note;
+  if (note != null && String(note).trim().length > 200) {
+    return res.status(422).json({ error: 'Note must be 200 characters or fewer' });
+  }
+
+  const data = applyDayChange({
+    dates: [...dates].sort(),
+    mode,
+    name,
+    repeat: mode === 'holiday' && Boolean(req.body?.repeat),
+    note,
+  });
+  res.json({ data });
 });
 
 router.put('/workdays', (req, res) => {
@@ -105,7 +277,9 @@ router.put('/workdays', (req, res) => {
      SET working_days = ?, updated_at = datetime('now', 'localtime')
      WHERE id = 1`
   ).run(JSON.stringify(workingDays));
-  res.json({ data: holidayPayload() });
+  // The regular week changed: rebuild today so the ledger reflects it at once.
+  recomputeDate(todayKey());
+  res.json({ data: calendarPayload() });
 });
 
 router.post('/holidays', (req, res) => {
@@ -118,7 +292,7 @@ router.post('/holidays', (req, res) => {
     if (err.status) return res.status(err.status).json({ error: err.message });
     throw err;
   }
-  res.status(201).json({ data: holidayPayload(), id });
+  res.status(201).json({ data: calendarPayload(), id });
 });
 
 router.put('/holidays/:id', (req, res) => {
@@ -136,7 +310,7 @@ router.put('/holidays/:id', (req, res) => {
     if (err.status) return res.status(err.status).json({ error: err.message });
     throw err;
   }
-  res.json({ data: holidayPayload() });
+  res.json({ data: calendarPayload() });
 });
 
 router.delete('/holidays/:id', (req, res) => {

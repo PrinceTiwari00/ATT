@@ -10,9 +10,9 @@ delete process.env.APP_PASSWORD;
 
 const { bootServer } = require('../src/bootstrap');
 const { getDb } = require('../src/db/connection');
-const { eachDay } = require('../src/lib/localDate');
+const { addDays, eachDay, parseLocalDate, todayKey } = require('../src/lib/localDate');
 const { readCalendar, isWorkingDate } = require('../src/services/calendar');
-const { bsMonthRange } = require('../src/lib/nepaliDate');
+const { adToBs, bsMonthRange } = require('../src/lib/nepaliDate');
 
 let server;
 let base;
@@ -138,4 +138,130 @@ test('monthly BS report excludes weekends, named holidays and future workdays fr
     body: JSON.stringify({ workingDays: [7] }),
   });
   assert.equal(response.status, 422);
+});
+
+/* ── calendar grid: day status + per-day work/holiday decisions ─────────── */
+
+const post = (path, body, method = 'PUT') => fetch(`${base}${path}`, {
+  method,
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+/** Most recent occurrence of `weekday` (0=Sun … 6=Sat) strictly before today. */
+function pastDateForWeekday(weekday) {
+  let key = addDays(todayKey(), -1);
+  for (let step = 0; step < 7; step += 1) {
+    if (parseLocalDate(key).getDay() === weekday) return key;
+    key = addDays(key, -1);
+  }
+  throw new Error(`no past ${weekday} found`);
+}
+
+const indexDays = (days) => Object.fromEntries(days.map((day) => [day.date, day]));
+
+test('calendar day status explains why each day works or not', async () => {
+  const response = await fetch(`${base}/api/calendar/days?from=2026-04-14&to=2026-04-20`);
+  assert.equal(response.status, 200);
+  const { data } = await json(response);
+  assert.equal(data.days.length, 7);
+  const byDate = indexDays(data.days);
+
+  // 2026-04-14 = Baisakh 1, 2083 BS — a plain Tuesday of the regular workweek.
+  assert.equal(byDate['2026-04-14'].isWorkingDay, true);
+  assert.equal(byDate['2026-04-14'].source, 'workweek');
+  assert.equal(byDate['2026-04-14'].bs.day, 1);
+
+  // Annual BS holiday (4 Baisakh) and the one-off holiday added above.
+  assert.equal(byDate['2026-04-17'].source, 'holiday');
+  assert.equal(byDate['2026-04-17'].isWorkingDay, false);
+  assert.deepEqual(byDate['2026-04-17'].holidayNames, ['Annual BS holiday']);
+  assert.deepEqual(byDate['2026-04-20'].holidayNames, ['School Foundation Day']);
+
+  // Weekend of the regular workweek.
+  assert.equal(byDate['2026-04-18'].source, 'off_week');
+  assert.equal(byDate['2026-04-18'].isWorkingDay, false);
+  assert.equal(byDate['2026-04-18'].isHoliday, false);
+});
+
+test('a holiday can be turned into a working day — and a weekly off can be worked', async () => {
+  const saturday = pastDateForWeekday(6);
+  const response = await post('/api/calendar/days', {
+    dates: ['2026-04-17', saturday],
+    mode: 'workday',
+    note: 'Exam make-up',
+  });
+  assert.equal(response.status, 200);
+  const { data } = await json(response);
+  const byDate = indexDays(data.days);
+
+  // The annual holiday is only exempted for this one date …
+  assert.equal(byDate['2026-04-17'].isWorkingDay, true);
+  assert.equal(byDate['2026-04-17'].source, 'override');
+  assert.equal(byDate['2026-04-17'].override.isWorking, true);
+  assert.equal(byDate['2026-04-17'].override.note, 'Exam make-up');
+  assert.deepEqual(byDate['2026-04-17'].holidayNames, ['Annual BS holiday']);
+  // … and the Saturday of the regular week can be worked as well.
+  assert.equal(byDate[saturday].isWorkingDay, true);
+  assert.equal(byDate[saturday].weeklyWorkday, false);
+
+  const calendar = await json(await fetch(`${base}/api/calendar`));
+  assert.equal(calendar.data.overrides.length, 2);
+  assert.ok(calendar.data.holidays.some((holiday) => holiday.kind === 'annual'),
+    'the recurring holiday definition must survive a day-level override');
+  assert.equal(readCalendar().workingDays.includes(6), false);
+
+  // A day that is worked now materializes absences for staff who did not punch.
+  const daily = await json(await fetch(`${base}/api/attendance/daily?date=${saturday}`));
+  assert.ok(daily.data.some((row) => row.status === 'absent'));
+
+  // Back to the school default: the holiday returns, the absences disappear.
+  const reset = await post('/api/calendar/days', { dates: ['2026-04-17', saturday], mode: 'default' });
+  assert.equal(reset.status, 200);
+  const after = await json(reset);
+  const resetByDate = indexDays(after.data.days);
+  assert.equal(resetByDate['2026-04-17'].source, 'holiday');
+  assert.equal(resetByDate['2026-04-17'].isWorkingDay, false);
+  assert.equal(resetByDate['2026-04-17'].override, null);
+  assert.equal(resetByDate[saturday].isWorkingDay, false);
+  assert.equal(after.data.overrides.length, 0);
+  const dailyAfter = await json(await fetch(`${base}/api/attendance/daily?date=${saturday}`));
+  assert.equal(dailyAfter.data.length, 0);
+});
+
+test('selecting a day on the calendar can add a one-off or a recurring holiday', async () => {
+  const wednesday = pastDateForWeekday(3);
+  const oneOff = await post('/api/calendar/days', {
+    dates: [wednesday], mode: 'holiday', name: 'Sports Day',
+  });
+  assert.equal(oneOff.status, 200);
+  const afterOneOff = await json(oneOff);
+  assert.equal(afterOneOff.data.days[0].isHoliday, true);
+  assert.deepEqual(afterOneOff.data.days[0].holidayNames, ['Sports Day']);
+  assert.equal(afterOneOff.data.days[0].isWorkingDay, false);
+  assert.ok(afterOneOff.data.holidays.some((h) => h.kind === 'once' && h.date === wednesday && h.name === 'Sports Day'));
+
+  // Same day, now recurring: the one-off twin is replaced by an annual rule so
+  // the holiday list never shows the same date twice.
+  const recurring = await post('/api/calendar/days', {
+    dates: [wednesday], mode: 'holiday', name: 'Sports Day (annual)', repeat: true,
+  });
+  assert.equal(recurring.status, 200);
+  const { data } = await json(recurring);
+  const bs = adToBs(wednesday);
+  assert.ok(data.holidays.some((h) => h.kind === 'annual' && h.bsMonth === bs.month && h.bsDay === bs.day));
+  assert.equal(data.holidays.filter((h) => h.date === wednesday).length, 0);
+  assert.equal(data.days[0].isHoliday, true);
+});
+
+test('calendar day API rejects malformed selections', async () => {
+  assert.equal((await fetch(`${base}/api/calendar/days?from=2026-04-14&to=not-a-date`)).status, 422);
+  assert.equal((await fetch(`${base}/api/calendar/days?from=2026-04-14&to=2027-04-14`)).status, 422);
+  assert.equal((await post('/api/calendar/days', { dates: [], mode: 'workday' })).status, 422);
+  assert.equal((await post('/api/calendar/days', { dates: ['2026-13-40'], mode: 'workday' })).status, 422);
+  assert.equal((await post('/api/calendar/days', { dates: ['2026-04-17'], mode: 'party' })).status, 422);
+  assert.equal((await post('/api/calendar/days', {
+    dates: Array.from({ length: 201 }, (_, i) => addDays('2026-04-14', i)),
+    mode: 'workday',
+  })).status, 422);
 });

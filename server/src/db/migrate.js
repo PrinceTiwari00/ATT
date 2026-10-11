@@ -119,6 +119,24 @@ const MIGRATIONS = [
         ON calendar_holidays(bs_month, bs_day) WHERE kind = 'annual';
     `,
   },
+  {
+    id: 3,
+    name: 'calendar-day-overrides',
+    sql: `
+      -- A per-day school decision that beats every other rule: a regular
+      -- holiday (or a weekly off) can be turned into a working day, and a
+      -- working day can be pinned back to off. Holidays that carry a name keep
+      -- living in calendar_holidays; this table only stores date exceptions.
+      CREATE TABLE calendar_day_overrides (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        date       TEXT    NOT NULL UNIQUE,          -- 'YYYY-MM-DD'
+        is_working INTEGER NOT NULL CHECK (is_working IN (0, 1)),
+        note       TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+      );
+    `,
+  },
 ];
 
 function migrate() {

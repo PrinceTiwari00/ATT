@@ -120,11 +120,24 @@ present/absent workdays, late arrivals and minutes, early departures and
 minutes, and overtime. It also downloads a CSV. Future working days are not
 counted as absences.
 
-**Calendar & Holidays** lets the school set its weekly workdays (new installs
-default to Monday–Friday) and maintain both one-off holidays and holidays that
-repeat on a BS month/day each year. Weekends and named holidays are excluded
-from absence totals. Holiday punches, if any, remain visible separately as
-off-day work.
+**Calendar & Holidays** shows the school month as a real calendar (Bikram Sambat
+with the matching Gregorian dates). Set the regular working week (new installs
+default to Monday–Friday), then **click a day or drag across several days** and
+choose *Work day*, *Holiday* or *School default*:
+
+- **Work day** — the day counts for attendance; it wins even when the day is a
+  weekly off or a named holiday (exam make-ups, make-up Saturdays). Staff
+  without a punch are marked absent for it.
+- **Holiday** — named holiday (optionally repeating every year on the same BS
+  date), excluded from absence totals. Punches on it stay visible as off-day
+  work in the reports.
+- **School default** — removes the manual change and follows the weekly rule
+  and the holiday list again.
+
+One-off/recurring holidays can still be maintained in the list below the
+calendar. Weekends, named holidays and day-level exceptions are all resolved in
+one place (`services/calendar.js`), so the dashboard, monthly reports and the
+daily ledger agree immediately after a change.
 
 ## Developing without a device (optional)
 
@@ -144,7 +157,9 @@ npm run dev
 GET    /api/dashboard/summary?date=YYYY-MM-DD
 GET    /api/attendance/daily?from&to&q&department&status
 GET    /api/reports/monthly?bsYear&bsMonth            # BS monthly staff totals
-GET    /api/calendar                                 # workweek + holiday definitions
+GET    /api/calendar                                 # workweek + holiday definitions + day overrides
+GET    /api/calendar/days?from&to                     # day-by-day status for the calendar grid
+PUT    /api/calendar/days {dates:[…],mode,name?,repeat?,note?}   # workday | holiday | default
 PUT    /api/calendar/workdays {workingDays:[1,2,3,4,5]}
 POST|PUT|DELETE /api/calendar/holidays[/:id]          # one-off or annual BS holiday
 GET    /api/attendance/logs?date&zk_user_id          # raw punch ledger
