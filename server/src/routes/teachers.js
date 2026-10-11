@@ -26,6 +26,50 @@ function refreshAfterRosterChange({ includeToday = true } = {}) {
 
 const router = express.Router();
 
+const EMPLOYMENT_TYPES = ['full_time', 'part_time'];
+
+/**
+ * Normalize the per-person weekday pattern (part-timers).
+ *
+ * `null` (or an empty list) means "follow the school working week", which is
+ * what every full-time profile stores; otherwise a sorted JSON array of unique
+ * weekday numbers (Sunday = 0 … Saturday = 6) ready for the TEXT column.
+ */
+function normalizeWorkingDays(raw) {
+  if (raw === null || raw === undefined || raw === '') return { ok: true, value: null };
+  let list = raw;
+  if (typeof list === 'string') {
+    const text = list.trim();
+    if (!text || text === 'null') return { ok: true, value: null };
+    try {
+      list = JSON.parse(text);
+    } catch (_) {
+      return { ok: false, value: null };
+    }
+  }
+  if (!Array.isArray(list)) return { ok: false, value: null };
+  if (list.length === 0) return { ok: true, value: null };
+  const days = [];
+  for (const value of list) {
+    const day = Number(value);
+    if (!Number.isInteger(day) || day < 0 || day > 6) return { ok: false, value: null };
+    if (!days.includes(day)) days.push(day);
+  }
+  days.sort((a, b) => a - b);
+  return { ok: true, value: JSON.stringify(days) };
+}
+
+/** API shape: the JSON pattern column travels as a plain weekday array. */
+function withWorkPattern(row) {
+  if (!row) return row;
+  const { ok, value } = normalizeWorkingDays(row.working_days);
+  return {
+    ...row,
+    working_days: ok && value ? JSON.parse(value) : null,
+    employment_type: row.employment_type || 'full_time',
+  };
+}
+
 function validateTeacher(body, { partial = false } = {}) {
   const errors = [];
   const pick = {};
@@ -51,6 +95,16 @@ function validateTeacher(body, { partial = false } = {}) {
     const raw = body.shift_id;
     pick.shift_id = raw === null || raw === undefined || raw === '' ? null : Number(raw);
     if (pick.shift_id !== null && !Number.isInteger(pick.shift_id)) errors.push('shift_id must be an integer or null');
+  }
+  if (!partial || body.employment_type !== undefined) {
+    pick.employment_type = str(body.employment_type) || 'full_time';
+    if (!EMPLOYMENT_TYPES.includes(pick.employment_type))
+      errors.push("employment_type must be 'full_time' or 'part_time'");
+  }
+  if (!partial || body.working_days !== undefined) {
+    const { ok, value } = normalizeWorkingDays(body.working_days);
+    if (!ok) errors.push('working_days must be null or 1-7 unique weekdays (Sunday=0 … Saturday=6)');
+    pick.working_days = value;
   }
   if (!partial || body.email !== undefined) {
     pick.email = str(body.email);
@@ -83,7 +137,7 @@ router.get('/', (req, res) => {
   if (status === 'archived') { /* reserved */ }
   if (status) { sql += ' AND t.status = ?'; args.push(status); }
   sql += ' ORDER BY t.full_name';
-  res.json({ data: db.prepare(sql).all(...args) });
+  res.json({ data: db.prepare(sql).all(...args).map(withWorkPattern) });
 });
 
 router.get('/departments', (req, res) => {
@@ -99,7 +153,7 @@ router.get('/:id', (req, res) => {
     )
     .get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Teacher not found' });
-  res.json({ data: row });
+  res.json({ data: withWorkPattern(row) });
 });
 
 /* Create (optionally also enroll on the device) */
@@ -114,11 +168,16 @@ router.post('/', async (req, res) => {
   try {
     const info = db
       .prepare(
-        `INSERT INTO teachers (zk_user_id, full_name, department, designation, shift_id, email, phone, status)
-         VALUES (@zk_user_id, @full_name, @department, @designation, @shift_id, @email, @phone, @status)`
+        `INSERT INTO teachers (zk_user_id, full_name, department, designation, shift_id,
+                               email, phone, status, employment_type, working_days)
+         VALUES (@zk_user_id, @full_name, @department, @designation, @shift_id,
+                 @email, @phone, @status, @employment_type, @working_days)`
       )
-      .run({ status: 'active', department: 'General', designation: 'Teacher', ...data });
-    const created = db.prepare('SELECT * FROM teachers WHERE id = ?').get(info.lastInsertRowid);
+      .run({
+        status: 'active', department: 'General', designation: 'Teacher',
+        employment_type: 'full_time', working_days: null, ...data,
+      });
+    const created = withWorkPattern(db.prepare('SELECT * FROM teachers WHERE id = ?').get(info.lastInsertRowid));
 
     // This person may already have punched on the terminal (the device was
     // synced before their profile existed) — adopt those rows and rebuild the
@@ -146,8 +205,8 @@ router.post('/', async (req, res) => {
   }
 });
 
-/* Update — if the shift changed, rebuild recent processed rows so statuses
-   immediately reflect the new schedule. */
+/* Update — if the shift or the personal working-day pattern changed, rebuild
+   recent processed rows so the ledger immediately reflects the new schedule. */
 router.put('/:id', (req, res) => {
   const db = getDb();
   const existing = db.prepare('SELECT * FROM teachers WHERE id = ?').get(req.params.id);
@@ -157,7 +216,7 @@ router.put('/:id', (req, res) => {
   if (errors.length) return res.status(422).json({ error: errors.join('; ') });
 
   const keys = Object.keys(data);
-  if (keys.length === 0) return res.json({ data: existing });
+  if (keys.length === 0) return res.json({ data: withWorkPattern(existing) });
   if (data.shift_id != null && !db.prepare('SELECT id FROM shifts WHERE id = ?').get(data.shift_id)) {
     return res.status(422).json({ error: 'shift_id does not exist' });
   }
@@ -173,11 +232,16 @@ router.put('/:id', (req, res) => {
     throw err;
   }
 
-  if (data.shift_id !== undefined && data.shift_id !== existing.shift_id) {
-    const today = todayKey();
-    const from = addDays(today, -30);
-    recomputeRange(from, today); // cheap enough; keeps reports consistent
-  }
+  /*
+   * Anything that changes WHEN this person is expected (their shift window or
+   * their working-day pattern) rewrites history: rebuild the last 30 days so
+   * absent/present days and late minutes match the new schedule immediately.
+   * (employment_type alone is only a label, so it does not trigger a rebuild.)
+   */
+  const scheduleChanged =
+    (data.shift_id !== undefined && data.shift_id !== existing.shift_id) ||
+    (data.working_days !== undefined && data.working_days !== existing.working_days);
+  if (scheduleChanged) recomputeRange(addDays(todayKey(), -30), todayKey());
 
   // A changed zk_user_id leaves its punches orphaned until they are adopted
   // again; any roster edit should also be visible in today's ledger.
@@ -189,7 +253,7 @@ router.put('/:id', (req, res) => {
        LEFT JOIN shifts s ON s.id = t.shift_id WHERE t.id = ?`
     )
     .get(req.params.id);
-  res.json({ data: row, linkedPunches: adoption.linked });
+  res.json({ data: withWorkPattern(row), linkedPunches: adoption.linked });
 });
 
 /* Delete */

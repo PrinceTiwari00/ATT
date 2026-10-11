@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, CalendarClock, CalendarDays, FileText, Users, Clock3, Fingerprint, Wifi, WifiOff, Loader2,
-  Radar, Settings2, MonitorSmartphone,
+  Radar, Settings2, MonitorSmartphone, UserCog,
 } from 'lucide-react';
 import { api, fmtDate, todayISO } from './api/client';
 import Dashboard from './pages/Dashboard';
@@ -10,6 +10,7 @@ import Attendance from './pages/Attendance';
 import MonthlyReport from './pages/MonthlyReport';
 import Calendar from './pages/Calendar';
 import Teachers from './pages/Teachers';
+import PartTime from './pages/PartTime';
 import Shifts from './pages/Shifts';
 import Device from './pages/Device';
 import Connect from './pages/Connect';
@@ -24,6 +25,7 @@ const NAV = [
   { to: '/reports', label: 'Monthly Reports', icon: FileText },
   { to: '/calendar', label: 'Calendar & Holidays', icon: CalendarDays },
   { to: '/teachers', label: 'Teachers & Staff', icon: Users },
+  { to: '/part-time', label: 'Part-time Staff', icon: UserCog },
   { to: '/shifts', label: 'Shifts', icon: Clock3 },
   { to: '/device', label: 'Device & Sync', icon: Fingerprint },
   { to: '/connect', label: 'Connect Device', icon: Radar },
@@ -82,6 +84,7 @@ const TITLES = {
   '/reports': ['Monthly Reports', 'Attendance totals by Bikram Sambat month'],
   '/calendar': ['Calendar & Holidays', 'Working days and school holidays'],
   '/teachers': ['Teachers & Staff', 'Profiles mapped to ZKTeco enrollment IDs'],
+  '/part-time': ['Part-time Staff', 'Personal working days, absences & pay-ready counts'],
   '/shifts': ['Shifts', 'Schedules & grace periods'],
   '/device': ['Device & Sync', 'ZKTeco link, poller & enrollment'],
   '/connect': ['Connect Device', 'Point this computer at your ZKTeco terminal'],
@@ -193,6 +196,7 @@ export default function App() {
             <Route path="/reports" element={<MonthlyReport />} />
             <Route path="/calendar" element={<Calendar />} />
             <Route path="/teachers" element={<Teachers />} />
+            <Route path="/part-time" element={<PartTime />} />
             <Route path="/shifts" element={<Shifts />} />
             <Route path="/device" element={<Device />} />
             <Route path="/connect" element={<Connect />} />

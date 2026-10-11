@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Plus, Search, Pencil, Trash2, Fingerprint, RefreshCw, UserPlus } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Plus, Search, Pencil, Trash2, Fingerprint, RefreshCw, UserPlus, CalendarClock } from 'lucide-react';
 import { api } from '../api/client';
 import Modal from '../components/Modal';
 import { useToast } from '../components/Toast';
+import { patternLabel } from '../lib/workPattern';
 
 const EMPTY_FORM = {
   zk_user_id: '', full_name: '', department: '', designation: 'Teacher',
   shift_id: '', email: '', phone: '', status: 'active', pushToDevice: false,
 };
+
+/**
+ * Employment type and the personal weekday pattern are deliberately NOT edited
+ * here — they live on the dedicated Part-time Staff page, where the days are
+ * picked against a month preview. This list only shows what is set.
+ */
 
 export default function Teachers() {
   const toast = useToast();
@@ -154,7 +162,17 @@ export default function Teachers() {
                       <div className="grid h-9 w-9 place-items-center rounded-full bg-indigo-100 text-[12px] font-bold text-indigo-700">
                         {t.full_name.split(' ').map((w) => w[0]).slice(0, 2).join('')}
                       </div>
-                      <span className="font-semibold text-slate-900">{t.full_name}</span>
+                      <div>
+                        <div className="font-semibold text-slate-900">{t.full_name}</div>
+                        {(t.employment_type === 'part_time' || t.working_days?.length) && (
+                          <Link to="/part-time" className="mt-0.5 inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-bold text-amber-700 hover:bg-amber-100"
+                            title="Working days are set on the Part-time Staff page">
+                            <CalendarClock size={11} />
+                            {t.employment_type === 'part_time' ? 'Part-time' : 'Own days'}
+                            {t.working_days?.length ? ` · ${patternLabel(t.working_days)}` : ''}
+                          </Link>
+                        )}
+                      </div>
                     </div>
                   </td>
                   <td className="td-table">

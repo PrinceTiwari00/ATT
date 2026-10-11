@@ -479,7 +479,7 @@ export default function Calendar() {
           <div className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-50 text-indigo-600"><Clock3 size={18} /></div>
           <div className="min-w-0 flex-1">
             <h2 className="text-[14px] font-bold text-slate-800">Regular working week</h2>
-            <p className="text-[12px] text-slate-500">Only working days without punches count as absent. Single days can still be changed on the calendar above.</p>
+            <p className="text-[12px] text-slate-500">Only working days without punches count as absent. Single days can still be changed on the calendar above, and staff with their own days (part-time) are set under Part-time Staff.</p>
           </div>
           <button className="btn-primary" onClick={saveWorkweek} disabled={loading || savingDays || workingDays.length === 0}>
             <Save size={15} /> {savingDays ? 'Saving…' : 'Save workweek'}
@@ -507,6 +507,8 @@ export default function Calendar() {
         <p className="px-5 pb-5 text-[11.5px] text-slate-400">
           Default is Monday–Friday. Saturdays and Sundays are non-working unless you select them above. A holiday that falls on a
           working day is skipped for absences — and a single day can be changed back to a working day from the calendar.
+          People on a personal pattern (Part-time Staff) are only expected on their own weekdays, and this week decides
+          which dates the school is open for them at all.
         </p>
       </section>
 

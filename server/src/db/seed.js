@@ -19,6 +19,12 @@ const SHIFTS = [
   { name: 'Admin Hours', start_time: '09:00', end_time: '17:00', grace_period_minutes: 15, is_default: 0, description: 'Office & administration staff' },
 ];
 
+/*
+ * [zk id, name, department, designation, shift id, working days?]
+ * The optional last entry is a part-time weekday pattern (Sunday = 0 … Saturday
+ * = 6): those profiles are only expected — and only marked absent — on those
+ * days, and the history generator skips the days they do not work.
+ */
 const TEACHERS = [
   ['101', 'Ayesha Khan', 'Science', 'Teacher', 1],
   ['102', 'Bilal Ahmed', 'Mathematics', 'Teacher', 1],
@@ -35,7 +41,18 @@ const TEACHERS = [
   ['113', 'Nadia Hussain', 'Science', 'Teacher', 1],
   ['114', 'Omar Farooq', 'Mathematics', 'Teacher', 1],
   ['115', 'Priya Sharma', 'Computer Science', 'Teacher', 1],
+  ['116', 'Qasim Rehman', 'Music', 'Teacher', 1, [1, 3, 5]],
+  ['117', 'Rukhsana Bibi', 'Computer Science', 'Teacher', 3, [2, 4]],
 ];
+
+function safeParseArray(text) {
+  try {
+    const parsed = JSON.parse(text || 'null');
+    return Array.isArray(parsed) && parsed.length ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
 
 function dateStrOffset(daysAgo) {
   const d = new Date(Date.now() - daysAgo * 864e5);
@@ -64,8 +81,9 @@ function seed({ force = false } = {}) {
      VALUES (@name, @start_time, @end_time, @grace_period_minutes, @description, @is_default)`
   );
   const insertTeacher = db.prepare(
-    `INSERT INTO teachers (zk_user_id, full_name, department, designation, shift_id, email, phone, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`
+    `INSERT INTO teachers (zk_user_id, full_name, department, designation, shift_id,
+                           email, phone, status, employment_type, working_days)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`
   );
   const insertLog = db.prepare(
     `INSERT OR IGNORE INTO attendance_logs (teacher_id, zk_user_id, device_sn, punch_time, punch_type, source)
@@ -75,19 +93,21 @@ function seed({ force = false } = {}) {
   db.exec('BEGIN');
   try {
     for (const s of SHIFTS) insertShift.run(s);
-    for (const [zkId, name, dept, desig, shiftId] of TEACHERS) {
+    for (const [zkId, name, dept, desig, shiftId, workDays] of TEACHERS) {
       const local = name.split(' ')[0].toLowerCase().replace(/[^a-z]/g, '');
       insertTeacher.run(
         zkId, name, dept, desig, shiftId,
         `${local}${zkId}@school.edu`,
-        `+92-300-${String(1000000 + Number(zkId)).slice(0, 7)}`
+        `+92-300-${String(1000000 + Number(zkId)).slice(0, 7)}`,
+        workDays ? 'part_time' : 'full_time',
+        workDays ? JSON.stringify(workDays) : null
       );
     }
 
     // Backfill history (skip today — the live poller/web simulator owns today).
     const teacherRows = db
       .prepare(
-        `SELECT t.id, t.zk_user_id, COALESCE(s.start_time, d.start_time) AS st,
+        `SELECT t.id, t.zk_user_id, t.working_days, COALESCE(s.start_time, d.start_time) AS st,
                 COALESCE(s.end_time, d.end_time) AS et
          FROM teachers t
          LEFT JOIN shifts s ON s.id = t.shift_id
@@ -98,7 +118,11 @@ function seed({ force = false } = {}) {
 
     for (let ago = config.seed.historyDays; ago >= 1; ago--) {
       const dateStr = dateStrOffset(ago);
+      const weekday = new Date(`${dateStr}T00:00:00`).getDay();
       for (const t of teacherRows) {
+        // A part-timer has no punches at all on a day they are not scheduled.
+        const pattern = safeParseArray(t.working_days);
+        if (pattern && !pattern.includes(weekday)) continue;
         for (const p of generateDayPunches({
           userId: t.zk_user_id,
           dateStr,

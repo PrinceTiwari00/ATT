@@ -9,7 +9,14 @@ const {
   bsMonthRange,
 } = require('../lib/nepaliDate');
 const { ensureProcessed } = require('../services/processor');
-const { readCalendar, isWorkingDate, holidayOccurrences } = require('../services/calendar');
+const {
+  readCalendar,
+  isWorkingDate,
+  holidayOccurrences,
+  parseWorkingDays,
+  teacherWorkingDays,
+  isTeacherExpectedDate,
+} = require('../services/calendar');
 
 const router = express.Router();
 
@@ -57,13 +64,13 @@ router.get('/monthly', (req, res) => {
 
   const calendar = readCalendar();
   const allDates = [...eachDay(period.from, period.to)];
+  // School-wide figures for the summary cards and the "how it is counted" notes.
   const allWorkingDates = allDates.filter((date) => isWorkingDate(date, calendar));
-  const completedWorkingDates = allWorkingDates.filter((date) => date <= today);
-  const workingDateSet = new Set(completedWorkingDates);
   const holidays = holidayOccurrences(period.from, period.to, calendar);
 
   const teachers = db.prepare(
-    `SELECT t.id, t.zk_user_id, t.full_name, t.department, t.designation
+    `SELECT t.id, t.zk_user_id, t.full_name, t.department, t.designation,
+            t.employment_type, t.working_days
      FROM teachers t WHERE t.status = 'active'
      ORDER BY t.full_name COLLATE NOCASE`
   ).all();
@@ -80,24 +87,41 @@ router.get('/monthly', (req, res) => {
   for (const record of records) recordsByTeacher.get(record.teacher_id)?.set(record.work_date, record);
 
   const staff = teachers.map((teacher) => {
+    /*
+     * Every day count below is measured against THIS person's own schedule, not
+     * the school week: a Mon/Wed/Fri part-timer has their expected days, their
+     * elapsed days and therefore their absences computed from their pattern.
+     * A full-time profile (no pattern) lands on exactly the school week, so its
+     * numbers are unchanged.
+     */
+    const scheduledDates = allDates.filter((date) => isTeacherExpectedDate(teacher, date, calendar));
+    const completedDates = scheduledDates.filter((date) => date <= today);
+    const completedSet = new Set(completedDates);
+    const pattern = parseWorkingDays(teacher.working_days);
     const totals = {
       id: teacher.id,
       zkUserId: teacher.zk_user_id,
       fullName: teacher.full_name,
       department: teacher.department,
       designation: teacher.designation,
-      scheduledWorkdays: allWorkingDates.length,
-      workingDays: completedWorkingDates.length,
+      employmentType: teacher.employment_type === 'part_time' ? 'part_time' : 'full_time',
+      partTime: teacher.employment_type === 'part_time',
+      // Weekdays they are expected on (their own pattern, else the school week).
+      workPattern: teacherWorkingDays(teacher, calendar),
+      followsSchoolWeek: pattern === null,
+      scheduledWorkdays: scheduledDates.length,
+      workingDays: completedDates.length,
       ...Object.fromEntries(METRICS.map((key) => [key, 0])),
     };
-    totals.absentDays = completedWorkingDates.length;
+    totals.absentDays = completedDates.length;
     const dayRecords = recordsByTeacher.get(teacher.id) || new Map();
 
     for (const [date, row] of dayRecords) {
       if (!row.punch_count) continue;
-      if (!workingDateSet.has(date)) {
-        // Keep exceptional holiday/weekend work visible without treating the
-        // non-working day as a regular present or absent day.
+      if (!completedSet.has(date)) {
+        // Work outside this person's own schedule — a holiday, a weekend, or a
+        // weekday their pattern skips. Kept visible, but it is neither a
+        // scheduled present day nor a missed (absent) one.
         totals.nonWorkingDayPunches += 1;
         continue;
       }
@@ -120,12 +144,19 @@ router.get('/monthly', (req, res) => {
     return totals;
   });
 
+  const sum = (key) => staff.reduce((total, row) => total + row[key], 0);
   const summary = {
     staffCount: staff.length,
+    partTimeStaff: staff.filter((row) => row.partTime).length,
     calendarWorkdays: allWorkingDates.length,
-    completedWorkdays: completedWorkingDates.length,
-    remainingWorkdays: allWorkingDates.length - completedWorkingDates.length,
-    ...Object.fromEntries(METRICS.map((key) => [key, staff.reduce((sum, row) => sum + row[key], 0)])),
+    completedWorkdays: allWorkingDates.filter((date) => date <= today).length,
+    remainingWorkdays:
+      allWorkingDates.length - allWorkingDates.filter((date) => date <= today).length,
+    // Staff-days people were actually scheduled for — the honest denominator
+    // once part-timers are on the roster (sums each person's own days).
+    expectedStaffDays: sum('workingDays'),
+    scheduledStaffDays: sum('scheduledWorkdays'),
+    ...Object.fromEntries(METRICS.map((key) => [key, sum(key)])),
   };
 
   res.json({
